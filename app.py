@@ -9,8 +9,7 @@ BITUNIX_API_KEY = os.getenv("BITUNIX_API_KEY")
 BITUNIX_API_SECRET = os.getenv("BITUNIX_API_SECRET")
 
 # Bitunix REST endpoint
-BITUNIX_ORDER_URL = "https://openapi.bitunix.com/v1/futures/order"
-
+BITUNIX_ORDER_URL = "wss://openapi.bitunix.com:443/ws-api/v1
 # Optional: fixed leverage
 LEVERAGE = 50
 
@@ -23,7 +22,7 @@ def webhook():
     order_payload = {
         "symbol": data["symbol"],           # e.g., BTCUSDT
         "side": data["side"],               # "buy" or "sell"
-        "type": "market",                   # market order
+        "type": "limit",                   # lmit order
         "quantity": data["quantity"],       # e.g., 0.01
         "leverage": LEVERAGE,
         "stop_loss": data.get("sl"),        # optional
