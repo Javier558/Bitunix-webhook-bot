@@ -15,7 +15,7 @@ app = Flask(__name__)
 BITUNIX_API_KEY = os.getenv("BITUNIX_API_KEY")
 BITUNIX_API_SECRET = os.getenv("BITUNIX_API_SECRET")
 # Base URL, e.g. "https://api.bitunix.com" or testnet "https://testnet-api.bitunix.com"
-BITUNIX_BASE_URL = os.getenv("BITUNIX_BASE_URL", "https://api.bitunix.com")
+BITUNIX_BASE_URL = os.getenv("BITUNIX_BASE_URL", "wss://openapi.bitunix.com:443/ws-api/v1")
 # Endpoint path for placing futures orders (set to the correct path your exchange uses)
 # Example: "/futures/order" or "/order"
 BITUNIX_ORDER_ENDPOINT = os.getenv("BITUNIX_ORDER_ENDPOINT", "/order")
