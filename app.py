@@ -1,72 +1,48 @@
 from flask import Flask, request, jsonify
-import json
-import time
-import websocket
-import hmac
-import hashlib
-import base64
-import threading
+import requests
+import os
 
 app = Flask(__name__)
 
-# === BITUNIX API KEYS ===
-API_KEY = "YOUR_API_KEY"
-API_SECRET = "YOUR_API_SECRET"
+# Load API keys from environment variables
+BITUNIX_API_KEY = os.getenv("BITUNIX_API_KEY")
+BITUNIX_API_SECRET = os.getenv("BITUNIX_API_SECRET")
 
-# === Helper: create authentication payload ===
-def generate_auth_payload(api_key, api_secret):
-    ts = str(int(time.time() * 1000))
-    signature_payload = ts + "GET" + "/ws-api/v1/private"
-    signature = hmac.new(api_secret.encode(), signature_payload.encode(), hashlib.sha256).hexdigest()
-    auth_data = {
-        "op": "login",
-        "args": [api_key, ts, signature]
-    }
-    return auth_data
+# Bitunix REST endpoint
+BITUNIX_ORDER_URL = "https://openapi.bitunix.com/v1/futures/order"
 
-# === Function to send order to Bitunix WebSocket ===
-def send_order(order):
-    def run_ws():
-        ws = websocket.WebSocket()
-        ws.connect("wss://fapi.bitunix.com/private/")
+# Optional: fixed leverage
+LEVERAGE = 50
 
-        # Authenticate
-        auth = generate_auth_payload(API_KEY, API_SECRET)
-        ws.send(json.dumps(auth))
-        resp = ws.recv()
-        print("Auth response:", resp)
-
-        # Send order
-        ws.send(json.dumps(order))
-        result = ws.recv()
-        print("Order result:", result)
-
-        ws.close()
-
-    thread = threading.Thread(target=run_ws)
-    thread.start()
-
-# === Flask route for TradingView webhook ===
 @app.route("/", methods=["POST"])
 def webhook():
-    data = request.get_json()
+    data = request.json
     print("Received alert payload:", data)
 
-    # Prepare Bitunix order payload
-    order = {
-        "symbol": data["symbol"],
-        "side": data["side"],
-        "type": "market",
-        "quantity": data["quantity"],
-        "leverage": 50,
-        "stop_loss": data.get("sl"),
-        "take_profit": data.get("tp")
+    # Build order payload for REST API
+    order_payload = {
+        "symbol": data["symbol"],           # e.g., BTCUSDT
+        "side": data["side"],               # "buy" or "sell"
+        "type": "market",                   # market order
+        "quantity": data["quantity"],       # e.g., 0.01
+        "leverage": LEVERAGE,
+        "stop_loss": data.get("sl"),        # optional
+        "take_profit": data.get("tp"),      # optional
     }
 
-    # Send order to Bitunix
-    send_order(order)
+    # Set headers with API key
+    headers = {
+        "Content-Type": "application/json",
+        "X-API-KEY": BITUNIX_API_KEY
+    }
 
-    return jsonify({"status": "order sent", "payload": order})
+    try:
+        response = requests.post(BITUNIX_ORDER_URL, json=order_payload, headers=headers, timeout=10)
+        print("Order sent to Bitunix:", response.json())
+        return jsonify({"status": "success", "response": response.json()})
+    except Exception as e:
+        print("Error sending order:", str(e))
+        return jsonify({"status": "error", "error": str(e)}), 500
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
