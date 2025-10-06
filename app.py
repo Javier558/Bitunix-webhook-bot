@@ -9,7 +9,7 @@ BITUNIX_API_KEY = os.getenv("BITUNIX_API_KEY")
 BITUNIX_API_SECRET = os.getenv("BITUNIX_API_SECRET")
 
 # Bitunix REST endpoint
-BITUNIX_ORDER_URL = "https://openapi.bitunix.com/v1/futures/order"
+BITUNIX_ORDER_URL = "wss://fapi.bitunix.com/private/	"
 
 # Optional: fixed leverage
 LEVERAGE = 50
