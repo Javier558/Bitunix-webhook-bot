@@ -1,5 +1,6 @@
 flask
 requests
-websocket-client
+websocket>=15.0.1
 python-dotenv
 gunicorn
+PyYAML>=6.0
