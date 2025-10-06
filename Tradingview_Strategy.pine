@@ -1,0 +1,91 @@
+//@version=6
+strategy('9:00PM first trade + immediate re-entry (SL/TP)', overlay = true, margin_long = 50, margin_short = 50, process_orders_on_close=true, calc_on_every_tick = true, initial_capital = 1500, default_qty_type = strategy.percent_of_equity, default_qty_value = 15, pyramiding = 1)
+
+// === INPUTS ===
+tp_percent = input.float(5.0, 'Take Profit (%)', step = 0.1)
+sl_percent = input.float(0.05, 'Stop Loss (%)', step = 0.1)
+start_hour = input.int(21, 'First trade hour (24h)')
+start_minute = input.int(0, 'First trade minute')
+
+// === STATE VARIABLES (declared up-front) ===
+var int direction = 1 // 1 = long, -1 = short
+var bool firstTradeDone = false
+var float sl_price = na
+var float tp_price = na
+var float last_entry_price = na
+var float exit_price = na
+var float profitPerc = na
+
+// current position size (series)
+pos_size = strategy.position_size
+
+// === 1) First trade at 21:00 (only once) ===
+isStartBar = hour(time) == start_hour and minute(time) == start_minute
+if isStartBar and not firstTradeDone and pos_size == 0
+    if direction == 1
+        strategy.entry('Long', strategy.long)
+    else
+        strategy.entry('Short', strategy.short)
+    firstTradeDone := true
+    firstTradeDone
+
+// === 2) Capture entry price once a position opens ===
+if pos_size != 0 and na(last_entry_price)
+    // strategy.position_avg_price is valid once position exists
+    last_entry_price := strategy.position_avg_price
+    last_entry_price
+
+// === 3) Compute SL/TP absolute price levels and attach strategy.exit ===
+if pos_size > 0
+    sl_price := strategy.position_avg_price * (1 - sl_percent / 100)
+    tp_price := strategy.position_avg_price * (1 + tp_percent / 100)
+    // link exit to the entry id "Long"
+    strategy.exit('ExitLong', from_entry = 'Long', stop = sl_price, limit = tp_price)
+else if pos_size < 0
+    sl_price := strategy.position_avg_price * (1 + sl_percent / 100)
+    tp_price := strategy.position_avg_price * (1 - tp_percent / 100)
+    strategy.exit('ExitShort', from_entry = 'Short', stop = sl_price, limit = tp_price)
+
+// === 4) Detect closed position (was in a trade previous bar, now flat) and react immediately ===
+was_in_position_prev = strategy.position_size[1] != 0
+now_flat = pos_size == 0
+
+if was_in_position_prev and now_flat
+    // approximate exit price with the close of the exit bar (typical when backtesting on bar close)
+    exit_price := close
+
+    // compute profit% depending on previous direction
+    if strategy.position_size[1] > 0
+        profitPerc := (exit_price - last_entry_price) / last_entry_price * 100
+        profitPerc
+    else
+        profitPerc := (last_entry_price - exit_price) / last_entry_price * 100
+        profitPerc
+
+    // If negative -> loss (SL); flip direction. If positive or zero -> keep same direction.
+    if profitPerc < 0
+        direction := -direction
+        direction
+
+    // reset stored entry price for the next trade
+    last_entry_price := na
+
+    // Immediately open the next trade (opposite or same depending on direction)
+    if direction == 1
+        strategy.entry('Long', strategy.long)
+    else
+        strategy.entry('Short', strategy.short)
+
+// === OPTIONAL: helpful plots & labels for debugging ===
+//plotshape(strategy.opentrades > 0 and strategy.position_size > 0, title = 'Long Active', location = location.belowbar, style = shape.triangleup, size = size.tiny)
+//plotshape(strategy.opentrades > 0 and strategy.position_size < 0, title = 'Short Active', location = location.abovebar, style = shape.triangledown, size = size.tiny)
+
+// debug labels (toggle with input if you want)
+var showDebug = input.bool(false, 'Show debug labels')
+if showDebug
+
+    label.new(bar_index, high, text = 'dir: ' + str.tostring(direction) + '\npos: ' + str.tostring(pos_size) + '\nlastEntry: ' + (na(last_entry_price) ? 'na' : str.tostring(last_entry_price, format.mintick)) + '\nSL: ' + (na(sl_price) ? 'na' : str.tostring(sl_price, format.mintick)) + '\nTP: ' + (na(tp_price) ? 'na' : str.tostring(tp_price, format.mintick)), yloc = yloc.abovebar, style = label.style_label_left, textcolor = color.white, size = size.small)
+
+// Webhook alert
+    alert_msg = str.format("{{\"side\":\"{0}\",\"symbol\":\"{1}\",\"sl\":{2},\"tp\":{3}}}", direction == 1 ? "buy" : "sell", syminfo.ticker, sl_price, tp_price)
+    alert(alert_msg, alert.freq_once_per_bar)
