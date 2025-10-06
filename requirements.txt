@@ -1,3 +1,4 @@
-Flask
-gunicorn
+flask
 requests
+websocket-client
+python-dotenv
