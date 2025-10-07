@@ -4,8 +4,8 @@ strategy('9:00PM first trade + immediate re-entry (SL/TP)', overlay = true, marg
 // === INPUTS ===
 tp_percent = input.float(5.0, 'Take Profit (%)', step = 0.1)
 sl_percent = input.float(0.05, 'Stop Loss (%)', step = 0.1)
-start_hour = input.int(21, 'First trade hour (24h)')
-start_minute = input.int(0, 'First trade minute')
+start_hour = input.int(22, 'First trade hour (24h)')
+start_minute = input.int(20, 'First trade minute')
 
 // === STATE VARIABLES (declared up-front) ===
 var int direction = 1 // 1 = long, -1 = short
@@ -90,4 +90,5 @@ if showDebug
     alert_msg = str.format("{{\"side\":\"{0}\",\"symbol\":\"{1}\",\"sl\":{2},\"tp\":{3}}}", direction == 1 ? "buy" : "sell", syminfo.ticker, sl_price, tp_price)
 
     alert(alert_msg, alert.freq_once_per_bar)
+
 
