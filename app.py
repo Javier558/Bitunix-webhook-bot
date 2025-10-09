@@ -27,6 +27,7 @@ def webhook():
         "leverage": LEVERAGE,
         "stop_loss": data.get("sl"),        # optional
         "take_profit": data.get("tp"),      # optional
+        "guaranteed_stop_loss": data.get("guaranteed_stop_loss", True)
     }
 
     # Set headers with API key
