@@ -2,126 +2,130 @@ from flask import Flask, request, jsonify
 import requests
 import os
 import time
-from threading import Lock
+import hmac
+import hashlib
+import json
+import uuid
 
 app = Flask(__name__)
 
-# API keys (stored securely in Render environment)
+# Environment keys
 BITUNIX_API_KEY = os.getenv("BITUNIX_API_KEY")
 BITUNIX_API_SECRET = os.getenv("BITUNIX_API_SECRET")
 
-# Thread lock to prevent race conditions
-lock = Lock()
+# Correct Futures endpoints
+BITUNIX_ORDER_URL = "https://fapi.bitunix.com/api/v1/futures/trade/place_order"
+BITUNIX_POSITION_URL = "https://fapi.bitunix.com/api/v1/futures/trade/position_info"
+BITUNIX_DEPTH_URL = "https://fapi.bitunix.com/api/v1/futures/market/depth"
 
-# Keep track of current active order
-active_order = {"retrying": False}
+LEVERAGE = 50
+RETRY_DELAY = 0.5
+MAX_RETRIES = 5
 
-BITUNIX_API_URL = "https://fapi.bitunix.com/api/v1/futures/trade/place_order"
+def sha256_hex(s):
+    return hashlib.sha256(s.encode()).hexdigest()
 
-HEADERS = {
-    "X-BX-APIKEY": BITUNIX_API_KEY,
-    "Content-Type": "application/json"
-}
-
-
-def get_last_price(symbol):
-    """Fetch last traded price from Bitunix"""
-    ticker_url = f"https://openapi.bitunix.com/api/v1/market/ticker?symbol={symbol}"
-    try:
-        resp = requests.get(ticker_url)
-        resp.raise_for_status()
-        data = resp.json()
-        return float(data["data"]["last"])
-    except Exception as e:
-        print(f"Error fetching last price: {e}")
-        return None
-
-
-def place_limit_order(symbol, side, quantity, price):
-    """Send limit order to Bitunix"""
-    payload = {
-        "symbol": symbol,
-        "side": side,
-        "type": "limit",
-        "price": price,
-        "quantity": quantity,
-        "timeInForce": "GTC"
+def get_bitunix_headers(method, endpoint, params=None, body=None):
+    timestamp = str(int(time.time() * 1000))
+    nonce = uuid.uuid4().hex
+    query = ""
+    if params:
+        for k, v in sorted(params.items()):
+            query += f"{k}{v}"
+    body_str = json.dumps(body, separators=(',', ':'), sort_keys=True) if body else ""
+    digest = sha256_hex(nonce + timestamp + BITUNIX_API_KEY + query + body_str)
+    sign = sha256_hex(digest + BITUNIX_API_SECRET)
+    return {
+        "api-key": BITUNIX_API_KEY,
+        "sign": sign,
+        "nonce": nonce,
+        "timestamp": timestamp,
+        "Content-Type": "application/json"
     }
-    response = requests.post(BITUNIX_API_URL, headers=HEADERS, json=payload)
-    print("Order response:", response.text)
-    return response
-
-
-def close_all_positions(symbol):
-    """Close any open positions before new entry"""
-    print("Closing all open positions...")
-    try:
-        close_payload = {
-            "symbol": symbol,
-            "side": "close",
-            "type": "market",
-            "quantity": "100%"  # This closes full position
-        }
-        response = requests.post(BITUNIX_API_URL, headers=HEADERS, json=close_payload)
-        print("Close response:", response.text)
-        return response
-    except Exception as e:
-        print("Error closing positions:", e)
-        return None
-
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    data = request.get_json()
-    print("Received alert payload:", data)
-
-    symbol = data.get("symbol")
-    side = data.get("side")
-    quantity = data.get("quantity", 1)  # default
-    sl = data.get("sl")
-    tp = data.get("tp")
-
-    # Skip if retrying
-    with lock:
-        if active_order["retrying"]:
-            print("An order is retrying. Skipping new one.")
-            return jsonify({"status": "skipped"}), 200
-        active_order["retrying"] = True
-
     try:
-        # Close open positions before opening new one
-        close_all_positions(symbol)
+        data = request.json
+        if not data:
+            raise ValueError("No JSON payload.")
+        symbol = data["symbol"].replace(".P", "").upper()
+        side = data["side"].upper()
+        qty = str(data["quantity"])
+        sl = data.get("sl")
+        tp = data.get("tp")
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
 
-        # Fetch last price
-        last_price = get_last_price(symbol)
-        if not last_price:
-            print("Could not fetch last price.")
-            return jsonify({"error": "Failed to fetch price"}), 400
+    print(f"Received alert payload: {data}")
+    print("Closing all open positions...")
 
-        # Retry placing the order up to 5 times
-        max_retries = 5
-        for attempt in range(1, max_retries + 1):
-            print(f"Attempt {attempt}: Placing limit order at {last_price}")
-            response = place_limit_order(symbol, side, quantity, last_price)
-            if response.status_code == 200:
-                print("Order placed successfully.")
-                break
-            else:
-                print("Order failed. Retrying...")
-                time.sleep(2)
+    # --- Check and close existing positions ---
+    try:
+        pos_params = {"symbol": symbol, "marginCoin": "USDT"}
+        headers = get_bitunix_headers("GET", BITUNIX_POSITION_URL, params=pos_params)
+        pos_resp = requests.get(BITUNIX_POSITION_URL, params=pos_params, headers=headers)
+        pos_data = pos_resp.json()
+        if pos_data.get("data"):
+            for pos in pos_data["data"]:
+                if float(pos.get("size", 0)) > 0:
+                    close_side = "SELL" if pos["side"].upper() == "BUY" else "BUY"
+                    close_payload = {
+                        "symbol": symbol,
+                        "side": close_side,
+                        "type": "MARKET",
+                        "quantity": pos["size"]
+                    }
+                    close_headers = get_bitunix_headers("POST", BITUNIX_ORDER_URL, body=close_payload)
+                    close_resp = requests.post(BITUNIX_ORDER_URL, json=close_payload, headers=close_headers)
+                    print(f"Close response: {close_resp.text}")
+    except Exception as e:
+        print(f"Error closing position: {e}")
+
+    # --- Fetch last price from order book ---
+    try:
+        params = {"symbol": symbol, "limit": "5"}
+        resp = requests.get(BITUNIX_DEPTH_URL, params=params, timeout=10)
+        resp.raise_for_status()
+        depth_data = resp.json()
+        if depth_data.get("code") == 0:
+            bids = depth_data["data"]["bids"]
+            asks = depth_data["data"]["asks"]
+            last_price = (float(bids[0][0]) + float(asks[0][0])) / 2
         else:
-            print("Max retries reached. Cancelling order.")
-            return jsonify({"status": "failed"}), 400
+            raise ValueError(f"Unexpected depth response: {depth_data}")
+    except Exception as e:
+        print(f"Error fetching last price: {e}")
+        print("Could not fetch last price.")
+        return jsonify({"status": "failed", "reason": str(e)}), 400
 
-        # Partial position closing (your section preserved)
-        print("Partial position closing... (if applicable)")
+    # --- Place new order ---
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            payload = {
+                "symbol": symbol,
+                "side": side,
+                "type": "LIMIT",
+                "price": str(last_price),
+                "quantity": qty,
+                "leverage": LEVERAGE,
+                "stop_loss": str(sl) if sl else None,
+                "take_profit": str(tp) if tp else None,
+                "guaranteed_stop_loss": True
+            }
+            payload = {k: v for k, v in payload.items() if v is not None}
+            headers = get_bitunix_headers("POST", BITUNIX_ORDER_URL, body=payload)
+            r = requests.post(BITUNIX_ORDER_URL, json=payload, headers=headers)
+            result = r.json()
+            print(f"Attempt {attempt}: {result}")
+            if result.get("code") == 0:
+                return jsonify({"status": "success", "response": result})
+            time.sleep(RETRY_DELAY)
+        except Exception as e:
+            print(f"Error on attempt {attempt}: {e}")
+            time.sleep(RETRY_DELAY)
 
-        return jsonify({"status": "success"}), 200
-
-    finally:
-        with lock:
-            active_order["retrying"] = False
-
+    return jsonify({"status": "failed", "message": "Max retries reached"}), 400
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
