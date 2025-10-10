@@ -16,7 +16,7 @@ lock = Lock()
 # Keep track of current active order
 active_order = {"retrying": False}
 
-BITUNIX_API_URL = "https://openapi.bitunix.com/api/v1/private/order"
+BITUNIX_API_URL = "https://fapi.bitunix.com/api/v1/futures/trade/place_order"
 
 HEADERS = {
     "X-BX-APIKEY": BITUNIX_API_KEY,
