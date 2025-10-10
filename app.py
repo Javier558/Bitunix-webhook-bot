@@ -2,146 +2,174 @@ from flask import Flask, request, jsonify
 import requests
 import os
 import time
-import hmac
-import hashlib
 import json
+import hashlib
 import uuid
 
 app = Flask(__name__)
 
-# Environment keys
+# Environment Variables for Security
 BITUNIX_API_KEY = os.getenv("BITUNIX_API_KEY")
 BITUNIX_API_SECRET = os.getenv("BITUNIX_API_SECRET")
 
-# Correct Futures endpoints
-BITUNIX_ORDER_URL = "https://fapi.bitunix.com/api/v1/futures/trade/place_order"
-BITUNIX_POSITION_URL = "https://fapi.bitunix.com/api/v1/futures/trade/position_info"
-BITUNIX_DEPTH_URL = "https://fapi.bitunix.com/api/v1/futures/market/depth"
+BASE_URL = "https://api.bitunix.com"  # Main endpoint
 
-LEVERAGE = 50
-RETRY_DELAY = 0.5
-MAX_RETRIES = 5
+# ------------------------------------------------------------
+# ✅ Correct Bitunix Signature Function
+# ------------------------------------------------------------
+def generate_signature(api_key, secret_key, query_params=None, body=None):
+    """
+    Returns headers including api-key, nonce, timestamp, and sign.
+    Matches Bitunix official documentation exactly.
+    """
+    nonce = str(uuid.uuid4()).replace("-", "")[:32]  # 32-char random string
+    timestamp = str(int(time.time() * 1000))  # milliseconds
 
-def sha256_hex(s):
-    return hashlib.sha256(s.encode()).hexdigest()
+    # Convert query params to sorted ASCII string
+    if query_params:
+        sorted_query = ''.join(f"{k}{v}" for k, v in sorted(query_params.items()))
+    else:
+        sorted_query = ''
 
-def get_bitunix_headers(method, endpoint, params=None, body=None):
-    # 1️⃣ Correct timestamp format (YYYYMMDDHHMMSS)
-    timestamp = time.strftime("%Y%m%d%H%M%S", time.gmtime())
-
-    # 2️⃣ 32-char random nonce
-    nonce = uuid.uuid4().hex[:32]
-
-    # 3️⃣ Build query params string (key + value, sorted by key, no separators)
-    query_str = ""
-    if params:
-        for k, v in sorted(params.items()):
-            query_str += f"{k}{v}"
-
-    # 4️⃣ Build body string (compact JSON, sorted keys)
-    body_str = ""
+    # Convert body to compact JSON string (no spaces)
     if body:
-        body_str = json.dumps(body, separators=(',', ':'), sort_keys=True)
+        body_str = json.dumps(body, separators=(',', ':'))
+    else:
+        body_str = ''
 
-    # 5️⃣ Build digest input
-    digest_input = nonce + timestamp + BITUNIX_API_KEY + query_str + body_str
-    digest = sha256_hex(digest_input)
+    # Step 1: digest
+    digest_input = nonce + timestamp + api_key + sorted_query + body_str
+    digest = hashlib.sha256(digest_input.encode('utf-8')).hexdigest()
 
-    # 6️⃣ Build final sign
-    sign_input = digest + BITUNIX_API_SECRET
-    sign = sha256_hex(sign_input)
+    # Step 2: final sign
+    sign_input = digest + secret_key
+    sign = hashlib.sha256(sign_input.encode('utf-8')).hexdigest()
 
-    return {
-        "api-key": BITUNIX_API_KEY,
+    headers = {
+        "api-key": api_key,
         "nonce": nonce,
         "timestamp": timestamp,
         "sign": sign,
         "Content-Type": "application/json"
     }
+    return headers
 
-@app.route("/webhook", methods=["POST"])
-def webhook():
-    try:
-        data = request.json
-        if not data:
-            raise ValueError("No JSON payload.")
-        symbol = data["symbol"].replace(".P", "").upper()
-        side = data["side"].upper()
-        qty = str(data["quantity"])
-        sl = data.get("sl")
-        tp = data.get("tp")
-    except Exception as e:
-        return jsonify({"error": str(e)}), 400
 
-    print(f"Received alert payload: {data}")
-    print("Closing all open positions...")
+# ------------------------------------------------------------
+# ✅ Helper Functions
+# ------------------------------------------------------------
+def send_request(method, endpoint, body=None, query=None, retries=5):
+    url = f"{BASE_URL}{endpoint}"
+    headers = generate_signature(BITUNIX_API_KEY, BITUNIX_API_SECRET, query, body)
+    print("Sending request:", method, url)
+    print("Headers being sent:", headers)
+    print("Body being sent:", body)
 
-    # --- Check and close existing positions ---
-    try:
-        pos_params = {"symbol": symbol, "marginCoin": "USDT"}
-        headers = get_bitunix_headers("GET", BITUNIX_POSITION_URL, params=pos_params)
-        pos_resp = requests.get(BITUNIX_POSITION_URL, params=pos_params, headers=headers)
-        pos_data = pos_resp.json()
-        if pos_data.get("data"):
-            for pos in pos_data["data"]:
-                if float(pos.get("size", 0)) > 0:
-                    close_side = "SELL" if pos["side"].upper() == "BUY" else "BUY"
-                    close_payload = {
-                        "symbol": symbol,
-                        "side": close_side,
-                        "type": "MARKET",
-                        "quantity": pos["size"]
-                    }
-                    close_headers = get_bitunix_headers("POST", BITUNIX_ORDER_URL, body=close_payload)
-                    close_resp = requests.post(BITUNIX_ORDER_URL, json=close_payload, headers=close_headers)
-                    print(f"Close response: {close_resp.text}")
-    except Exception as e:
-        print(f"Error closing position: {e}")
-
-    # --- Fetch last price from order book ---
-    try:
-        params = {"symbol": symbol, "limit": "5"}
-        resp = requests.get(BITUNIX_DEPTH_URL, params=params, timeout=10)
-        resp.raise_for_status()
-        depth_data = resp.json()
-        if depth_data.get("code") == 0:
-            bids = depth_data["data"]["bids"]
-            asks = depth_data["data"]["asks"]
-            last_price = (float(bids[0][0]) + float(asks[0][0])) / 2
-        else:
-            raise ValueError(f"Unexpected depth response: {depth_data}")
-    except Exception as e:
-        print(f"Error fetching last price: {e}")
-        print("Could not fetch last price.")
-        return jsonify({"status": "failed", "reason": str(e)}), 400
-
-    # --- Place new order ---
-    for attempt in range(1, MAX_RETRIES + 1):
+    for attempt in range(1, retries + 1):
         try:
-            payload = {
-                "symbol": symbol,
-                "side": side,
-                "type": "LIMIT",
-                "price": str(last_price),
-                "quantity": qty,
-                "leverage": LEVERAGE,
-                "stop_loss": str(sl) if sl else None,
-                "take_profit": str(tp) if tp else None,
-                "guaranteed_stop_loss": True
-            }
-            payload = {k: v for k, v in payload.items() if v is not None}
-            headers = get_bitunix_headers("POST", BITUNIX_ORDER_URL, body=payload)
-            r = requests.post(BITUNIX_ORDER_URL, json=payload, headers=headers)
-            result = r.json()
-            print(f"Attempt {attempt}: {result}")
-            if result.get("code") == 0:
-                return jsonify({"status": "success", "response": result})
-            time.sleep(RETRY_DELAY)
+            if method == "POST":
+                r = requests.post(url, headers=headers, json=body, timeout=10)
+            elif method == "DELETE":
+                r = requests.delete(url, headers=headers, json=body, timeout=10)
+            else:
+                r = requests.get(url, headers=headers, params=query, timeout=10)
+
+            response_json = r.json()
+            print(f"Attempt {attempt}: {response_json}")
+
+            # If successful response
+            if response_json.get("code") == 0:
+                return response_json
+            else:
+                time.sleep(1)
+
         except Exception as e:
             print(f"Error on attempt {attempt}: {e}")
-            time.sleep(RETRY_DELAY)
+            time.sleep(1)
+    return None
 
-    return jsonify({"status": "failed", "message": "Max retries reached"}), 400
 
+# ------------------------------------------------------------
+# ✅ Core Trading Functions
+# ------------------------------------------------------------
+def close_all_positions(symbol):
+    print("Closing all open positions...")
+    endpoint = "/v1/private/position/close-all"
+    body = {"symbol": symbol}
+    return send_request("POST", endpoint, body=body)
+
+
+def place_limit_order(symbol, side, quantity, sl, tp, guaranteed_sl=False):
+    """
+    Places a limit order using the last price, sets SL/TP, supports guaranteed SL.
+    """
+    # Get current price
+    ticker_resp = send_request("GET", f"/v1/public/ticker", query={"symbol": symbol})
+    if not ticker_resp or "data" not in ticker_resp:
+        print("❌ Failed to fetch ticker data.")
+        return None
+
+    last_price = float(ticker_resp["data"].get("lastPrice", 0))
+    print(f"✅ Last price for {symbol}: {last_price}")
+
+    # Prepare order body
+    order_body = {
+        "symbol": symbol,
+        "side": side,
+        "type": "LIMIT",
+        "price": last_price,
+        "quantity": quantity,
+        "timeInForce": "GTC",
+        "stopLossPrice": sl,
+        "takeProfitPrice": tp,
+        "guaranteedStopLoss": guaranteed_sl
+    }
+
+    endpoint = "/v1/private/order/create"
+    return send_request("POST", endpoint, body=order_body)
+
+
+def partial_position_close(symbol, quantity):
+    """
+    Closes part of an open position.
+    """
+    print(f"Partial position closing for {symbol}, qty: {quantity}")
+    endpoint = "/v1/private/position/close-partial"
+    body = {"symbol": symbol, "quantity": quantity}
+    return send_request("POST", endpoint, body=body)
+
+
+# ------------------------------------------------------------
+# ✅ Flask Route (Main Entry)
+# ------------------------------------------------------------
+@app.route("/", methods=["POST"])
+def webhook():
+    data = request.get_json()
+    print("Received alert payload:", data)
+
+    side = data.get("side")
+    symbol = data.get("symbol")
+    sl = data.get("sl")
+    tp = data.get("tp")
+    quantity = data.get("quantity")
+    guaranteed_sl = data.get("guaranteed_stop_loss", False)
+
+    # 1️⃣ Close existing open positions before entering a new one
+    close_all_positions(symbol)
+
+    # 2️⃣ Place limit order
+    response = place_limit_order(symbol, side, quantity, sl, tp, guaranteed_sl)
+
+    if response:
+        print("✅ Order response:", response)
+        return jsonify({"status": "success", "response": response})
+    else:
+        print("❌ Order placement failed after retries.")
+        return jsonify({"status": "failed"}), 500
+
+
+# ------------------------------------------------------------
+# ✅ Run Server
+# ------------------------------------------------------------
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    app.run(host="0.0.0.0", port=10000)
