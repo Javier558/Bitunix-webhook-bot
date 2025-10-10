@@ -62,11 +62,18 @@ def webhook():
     retry_orders[symbol] = {"attempts": 0, "active": True}
 
     filled = False
+    result = None  # 🔹 Added: initialize result so it's always defined
+
     while retry_orders[symbol]["active"] and retry_orders[symbol]["attempts"] < MAX_RETRIES:
         try:
             # Get last price
-            ticker_resp = requests.get(f"{BITUNIX_TICKER_URL}?symbol={symbol}", headers=headers)
+            ticker_resp = requests.get(f"{BITUNIX_TICKER_URL}?symbol={symbol}", headers=headers, timeout=10)
             ticker_data = ticker_resp.json()
+            
+            # 🔹 Added: check if 'lastPrice' exists
+            if "lastPrice" not in ticker_data:
+                raise ValueError(f"'lastPrice' not found in ticker response: {ticker_data}")
+            
             last_price = float(ticker_data["lastPrice"])
             print(f"Attempt {retry_orders[symbol]['attempts'] + 1}: Last price for {symbol} is {last_price}")
 
@@ -101,7 +108,9 @@ def webhook():
             time.sleep(RETRY_DELAY)
 
         except Exception as e:
-            print(f"Error on attempt {retry_orders[symbol]['attempts'] + 1} for {symbol}: {str(e)}")
+            # 🔹 Added: always assign to result so UnboundLocalError doesn't occur
+            result = str(e)
+            print(f"Error on attempt {retry_orders[symbol]['attempts'] + 1} for {symbol}: {result}")
             retry_orders[symbol]["attempts"] += 1
             time.sleep(RETRY_DELAY)
 
