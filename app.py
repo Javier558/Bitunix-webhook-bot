@@ -15,7 +15,7 @@ BITUNIX_API_SECRET = os.getenv("BITUNIX_API_SECRET")
 
 # Bitunix endpoints
 BITUNIX_ORDER_URL = "https://fapi.bitunix.com/api/v1/futures/trade/place_order"
-BITUNIX_TICKER_URL = "https://fapi.bitunix.com/api/v1/futures/market/depth?symbol=BTCUSDT&limit=max" # Still need to verify exact Ticker endpoint/response for Futures
+BITUNIX_TICKER_URL = "https://fapi.bitunix.com/api/v1/futures/market/depth?symbol=SOLUSDT&limit=max" # Still need to verify exact Ticker endpoint/response for Futures
 BITUNIX_POSITION_URL = "https://fapi.bitunix.com/api/v1/futures/trade/position_info"
 
 LEVERAGE = 50
