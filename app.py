@@ -26,20 +26,36 @@ def sha256_hex(s):
     return hashlib.sha256(s.encode()).hexdigest()
 
 def get_bitunix_headers(method, endpoint, params=None, body=None):
-    timestamp = str(int(time.time() * 1000))
-    nonce = uuid.uuid4().hex
-    query = ""
+    # 1️⃣ Correct timestamp format (YYYYMMDDHHMMSS)
+    timestamp = time.strftime("%Y%m%d%H%M%S", time.gmtime())
+
+    # 2️⃣ 32-char random nonce
+    nonce = uuid.uuid4().hex[:32]
+
+    # 3️⃣ Build query params string (key + value, sorted by key, no separators)
+    query_str = ""
     if params:
         for k, v in sorted(params.items()):
-            query += f"{k}{v}"
-    body_str = json.dumps(body, separators=(',', ':'), sort_keys=True) if body else ""
-    digest = sha256_hex(nonce + timestamp + BITUNIX_API_KEY + query + body_str)
-    sign = sha256_hex(digest + BITUNIX_API_SECRET)
+            query_str += f"{k}{v}"
+
+    # 4️⃣ Build body string (compact JSON, sorted keys)
+    body_str = ""
+    if body:
+        body_str = json.dumps(body, separators=(',', ':'), sort_keys=True)
+
+    # 5️⃣ Build digest input
+    digest_input = nonce + timestamp + BITUNIX_API_KEY + query_str + body_str
+    digest = sha256_hex(digest_input)
+
+    # 6️⃣ Build final sign
+    sign_input = digest + BITUNIX_API_SECRET
+    sign = sha256_hex(sign_input)
+
     return {
         "api-key": BITUNIX_API_KEY,
-        "sign": sign,
         "nonce": nonce,
         "timestamp": timestamp,
+        "sign": sign,
         "Content-Type": "application/json"
     }
 
