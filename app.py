@@ -142,29 +142,30 @@ def partial_position_close(symbol, quantity):
 # ------------------------------------------------------------
 # ✅ Flask Route (Main Entry)
 # ------------------------------------------------------------
-@app.route("/", methods=["POST"])
+@app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.get_json()
+    if not data:
+        return jsonify({"status": "error", "message": "No JSON payload received"}), 400
+
     print("Received alert payload:", data)
 
-    side = data.get("side")
     symbol = data.get("symbol")
+    side = data.get("side")
+    quantity = data.get("quantity")
     sl = data.get("sl")
     tp = data.get("tp")
-    quantity = data.get("quantity")
     guaranteed_sl = data.get("guaranteed_stop_loss", False)
 
-    # 1️⃣ Close existing open positions before entering a new one
+    # Close all open positions first
     close_all_positions(symbol)
 
-    # 2️⃣ Place limit order
-    response = place_limit_order(symbol, side, quantity, sl, tp, guaranteed_sl)
+    # Place new limit order
+    resp = place_limit_order(symbol, side, quantity, sl, tp, guaranteed_sl)
 
-    if response:
-        print("✅ Order response:", response)
-        return jsonify({"status": "success", "response": response})
+    if resp:
+        return jsonify({"status": "success", "response": resp})
     else:
-        print("❌ Order placement failed after retries.")
         return jsonify({"status": "failed"}), 500
 
 
