@@ -133,16 +133,16 @@ def webhook():
             print(f"DEBUG: Ticker API Status: {ticker_resp.status_code}, Body: {ticker_resp.text}")
             ticker_data = ticker_resp.json()
             
-            last_price = Nonce
+            last_price = None
             if ticker_data.get("code") == 0 and isinstance(ticker_data.get("data"), list):
                 for ticker_item in ticker_data["data"]:
                     if ticker_item.get("symbol") == symbol:
                         # Ensure 'lastPrice' exists and is not None before converting
-                        if ticker_item.get("lastPrice") is not Nonce:
+                        if ticker_item.get("lastPrice") is not None:
                             last_price = float(ticker_item.get("lastPrice"))
                             break
             
-            if last_price is Nonce:
+            if last_price is None:
                 # Log the full response for better debugging if lastPrice is missing
                 raise ValueError(f"'lastPrice' not found for {symbol} in ticker response: {ticker_data}")
 
