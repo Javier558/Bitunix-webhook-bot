@@ -86,17 +86,31 @@ qty = position_value_usd / close
 
 // === 6) Webhook alert ===
 // Only send alert if sl_price and tp_price have been calculated (i.e., we are in a trade)
+var string symbol_to_send = ""
+
 if not na(sl_price) and not na(tp_price)
     side_str = direction == 1 ? "buy" : "sell"
-    symbol_str = syminfo.tickerid
+    
+    // Extract the raw symbol (e.g., "BTCUSDT") from the full ticker ID (e.g., "BITUNIX:BTCUSDT")
+    var string symbol_to_send = na
+    if str.contains(syminfo.tickerid, ":")
+        // Split the ticker ID by ":" and take the last part
+        symbol_parts = str.split(syminfo.tickerid, ":")
+        symbol_to_send := array.get(symbol_parts, array.size(symbol_parts) - 1)
+    else
+        // If no ":" is present, assume it's already the raw symbol
+        symbol_to_send := syminfo.tickerid
+
     sl_str = str.tostring(sl_price, format.mintick)
     tp_str = str.tostring(tp_price, format.mintick)
     qty_str = str.tostring(qty, format.mintick)
 
-    alert_msg = "{\"side\":\"" + side_str + "\",\"symbol\":\"" + symbol_str + "\",\"sl\":" + sl_str + ",\"tp\":" + tp_str + ",\"quantity\":" + qty_str + ",\"guaranteed_stop_loss\":true}"
+    // Build the JSON alert message using the cleaned symbol name
+    alert_msg = "{\"side\":\"" + side_str + "\",\"symbol\":\"" + symbol_to_send + "\",\"sl\":" + sl_str + ",\"tp\":" + tp_str + ",\"quantity\":" + qty_str + ",\"guaranteed_stop_loss\":true}"
     alert(alert_msg, alert.freq_once_per_bar)
 
 // === Debug labels (optional) ===
 var showDebug = input.bool(false, 'Show debug labels')
 if showDebug
-    label.new(bar_index, high, text = 'dir: ' + str.tostring(direction) + '\ninitial_equity: ' + str.tostring(initial_equity, format.mintick), yloc = yloc.abovebar, style = label.style_label_left, textcolor = color.white, size = size.small)
+    label.new(bar_index, high, text = 'dir: ' + str.tostring(direction) + '\ninitial_equity: ' + str.tostring(initial_equity, format.mintick) + '\nSymbol: ' + symbol_to_send, yloc = yloc.abovebar, style = label.style_label_left, textcolor = color.white, size = size.small)
+
