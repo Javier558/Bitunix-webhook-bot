@@ -22,22 +22,31 @@ RETRY_DELAY = 0.5  # seconds
 MAX_RETRIES = 5
 
 # --- Bitunix API Signing Function ---
-def get_bitunix_headers(payload=None):
+def get_bitunix_headers(method, endpoint, params=None, body=None):
     timestamp = str(int(time.time() * 1000))
-    if payload:
-        data_string = json.dumps(payload, separators=(',', ':'))
+    
+    # Sign public endpoints differently from private ones
+    is_private = "trade" in endpoint or "position" in endpoint
+    
+    if is_private:
+        # Prepare data for signing based on method and payload
+        if method == "GET":
+            sign_data = f"{timestamp}{BITUNIX_API_KEY}"
+        elif method == "POST":
+            json_body = json.dumps(body, separators=(',', ':')) if body else ''
+            sign_data = f"{timestamp}{BITUNIX_API_KEY}{json_body}"
+            
+        signature = hmac.new(BITUNIX_API_SECRET.encode(), sign_data.encode(), hashlib.sha256).hexdigest()
+        
+        return {
+            "X-BU-ACCESS-KEY": BITUNIX_API_KEY,
+            "X-BU-ACCESS-SIGN": signature,
+            "X-BU-ACCESS-TIMESTAMP": timestamp,
+            "Content-Type": "application/json"
+        }
     else:
-        data_string = ""
-    
-    sign_payload = f"{timestamp}{BITUNIX_API_KEY}{data_string}"
-    signature = hmac.new(BITUNIX_API_SECRET.encode(), sign_payload.encode(), hashlib.sha256).hexdigest()
-    
-    return {
-        "X-BU-ACCESS-KEY": BITUNIX_API_KEY,
-        "X-BU-ACCESS-SIGN": signature,
-        "X-BU-ACCESS-TIMESTAMP": timestamp,
-        "Content-Type": "application/json"
-    }
+        # No signature needed for public endpoints like the ticker
+        return {"Content-Type": "application/json"}
 
 @app.route("/", methods=["POST"])
 def webhook():
@@ -61,44 +70,50 @@ def webhook():
 
     # 2. Check for open positions and close them if necessary
     try:
-        position_headers = get_bitunix_headers()
+        position_headers = get_bitunix_headers("GET", BITUNIX_POSITION_URL)
         position_params = {"symbol": symbol}
         position_resp = requests.get(BITUNIX_POSITION_URL, params=position_params, headers=position_headers, timeout=10)
+        print(f"DEBUG: Position API Status: {position_resp.status_code}, Body: {position_resp.text}")
         position_data = position_resp.json()
         
         if position_data.get("data"):
-            current_position = position_data["data"][0] if isinstance(position_data["data"], list) and position_data["data"] else None
-            if current_position and float(current_position.get("size", 0)) > 0:
-                print(f"Closing existing position for {symbol}...")
-                close_payload = {
-                    "symbol": symbol,
-                    "side": "SELL" if current_position["side"].upper() == "BUY" else "BUY",
-                    "type": "MARKET",
-                    "quantity": current_position["size"]
-                }
-                close_headers = get_bitunix_headers(payload=close_payload)
-                close_resp = requests.post(BITUNIX_ORDER_URL, json=close_payload, headers=close_headers, timeout=10)
-                print(f"Close position response: {close_resp.json()}")
+            # The 'data' might be a single dict or a list, so handle both
+            current_positions = position_data["data"] if isinstance(position_data["data"], list) else [position_data["data"]]
+            
+            for pos in current_positions:
+                if float(pos.get("size", 0)) > 0 and pos.get("symbol") == symbol:
+                    print(f"Closing existing position for {symbol}...")
+                    close_payload = {
+                        "symbol": symbol,
+                        "side": "SELL" if pos["side"].upper() == "BUY" else "BUY",
+                        "type": "MARKET",
+                        "quantity": pos["size"]
+                    }
+                    close_headers = get_bitunix_headers("POST", BITUNIX_ORDER_URL, body=close_payload)
+                    close_resp = requests.post(BITUNIX_ORDER_URL, json=close_payload, headers=close_headers, timeout=10)
+                    print(f"Close position response: {close_resp.json()}")
+                    break # Assuming only one position per symbol for this logic
 
     except Exception as e:
         print(f"Error checking or closing existing position: {e}")
         # Continue with the new order even if closing fails
 
     # 3. Place new order with retry logic
+    result = {"message": "Order failed after max retries."} # default result
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             # Get last price
-            ticker_headers = get_bitunix_headers()
-            ticker_resp = requests.get(f"{BITUNIX_TICKER_URL}?symbol={symbol}", headers=ticker_headers, timeout=10)
+            ticker_headers = get_bitunix_headers("GET", BITUNIX_TICKER_URL) # Public endpoint
+            ticker_resp = requests.get(f"{BITUNIX_TICKER_URL}", params={"symbol": symbol}, headers=ticker_headers, timeout=10)
+            print(f"DEBUG: Ticker API Status: {ticker_resp.status_code}, Body: {ticker_resp.text}")
             ticker_data = ticker_resp.json()
             
-            # Parse Bitunix ticker response correctly
-            ticker_list = ticker_data.get("data", [])
             last_price = None
-            for ticker_item in ticker_list:
-                if ticker_item.get("symbol") == symbol:
-                    last_price = float(ticker_item.get("lastPrice"))
-                    break
+            if ticker_data.get("code") == 0 and isinstance(ticker_data.get("data"), list):
+                for ticker_item in ticker_data["data"]:
+                    if ticker_item.get("symbol") == symbol:
+                        last_price = float(ticker_item.get("lastPrice"))
+                        break
             
             if last_price is None:
                 raise ValueError(f"'lastPrice' not found for {symbol} in ticker response: {ticker_data}")
@@ -110,15 +125,16 @@ def webhook():
                 "symbol": symbol,
                 "side": side,
                 "type": "LIMIT",
-                "price": last_price,
-                "quantity": quantity,
+                "price": str(last_price),
+                "quantity": str(quantity),
                 "leverage": LEVERAGE,
-                "stop_loss": stop_loss,
-                "take_profit": take_profit,
-                "guaranteed_stop_loss": True # Bitunix expects boolean
+                "stop_loss": str(stop_loss) if stop_loss else None,
+                "take_profit": str(take_profit) if take_profit else None,
+                "guaranteed_stop_loss": True
             }
+            order_payload = {k: v for k, v in order_payload.items() if v is not None} # Clean up None values
 
-            order_headers = get_bitunix_headers(payload=order_payload)
+            order_headers = get_bitunix_headers("POST", BITUNIX_ORDER_URL, body=order_payload)
             response = requests.post(BITUNIX_ORDER_URL, json=order_payload, headers=order_headers, timeout=10)
             result = response.json()
             print(f"Order attempt {attempt}: {result}")
@@ -134,8 +150,8 @@ def webhook():
             time.sleep(RETRY_DELAY)
 
     print(f"Order for {symbol} failed after {MAX_RETRIES} retries ❌")
-    return jsonify({"status": "failed", "message": "Max retries reached."}), 400
+    return jsonify({"status": "failed", "response": result}), 400
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
-
