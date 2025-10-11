@@ -24,13 +24,11 @@ def generate_signature(api_key, secret_key, query_params=None, body=None):
     nonce = str(uuid.uuid4()).replace("-", "")[:32]
     timestamp = str(int(time.time() * 1000))
 
-    # Sort query params by key and concatenate as per Bitunix documentation
     sorted_query = ''
     if query_params:
         sorted_params = sorted(query_params.items())
         sorted_query = ''.join(f"{k}{v}" for k, v in sorted_params)
     
-    # Sort JSON body keys and format without spaces as per Bitunix documentation
     body_str = ''
     if body:
         body_str = json.dumps(body, separators=(',', ':'), sort_keys=True)
@@ -55,11 +53,15 @@ def generate_signature(api_key, secret_key, query_params=None, body=None):
 # ------------------------------------------------------------
 def send_request(method, endpoint, body=None, query=None):
     url = f"{BASE_URL}{endpoint}"
+    if not BITUNIX_API_KEY or not BITUNIX_API_SECRET:
+        print("WARNING: API keys are not set. Cannot send request.")
+        return None
     headers = generate_signature(BITUNIX_API_KEY, BITUNIX_API_SECRET, query, body)
+    
     print("Sending request:", method, url)
     print("Headers:", headers)
-    print("Body:", body) # For POST/DELETE, this is the JSON body
-    print("Query:", query) # For GET, this is the query parameters
+    print("Body:", body)
+    print("Query:", query)
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
@@ -67,18 +69,23 @@ def send_request(method, endpoint, body=None, query=None):
                 r = requests.post(url, headers=headers, json=body, timeout=10)
             elif method == "DELETE":
                 r = requests.delete(url, headers=headers, json=body, timeout=10)
-            else: # GET request
+            else:
                 r = requests.get(url, headers=headers, params=query, timeout=10)
 
+            r.raise_for_status() # Raise an exception for bad status codes
             resp_json = r.json()
             print(f"Attempt {attempt}: {resp_json}")
 
             if resp_json.get("code") == 0:
                 return resp_json
             else:
+                print(f"Bitunix API error: {resp_json.get('msg')}")
                 time.sleep(RETRY_DELAY)
-        except Exception as e:
-            print(f"Error attempt {attempt}: {e}")
+        except requests.exceptions.RequestException as e:
+            print(f"Request error attempt {attempt}: {e}")
+            time.sleep(RETRY_DELAY)
+        except json.JSONDecodeError:
+            print(f"Error decoding JSON response: {r.text}")
             time.sleep(RETRY_DELAY)
     return None
 
@@ -89,16 +96,13 @@ def close_all_positions(symbol):
     print("Closing all open positions...")
     endpoint = "/api/v1/futures/trade/close_all_position"
     body = {"symbol": symbol}
-    # For POST requests, query_params for signature are None
     return send_request("POST", endpoint, body=body)
 
 # ------------------------------------------------------------
 # ✅ Place limit order with SL/TP and guaranteed SL
 # ------------------------------------------------------------
 def place_limit_order(symbol, side, quantity, sl=None, tp=None, guaranteed_sl=False):
-    # Get order book (bids/asks)
-    # For GET requests, query is passed as params, which is used for signature
-    ticker_resp = send_request("GET", "/api/v1/futures/market/depth", query={"symbol": symbol, "limit": "max"})
+    ticker_resp = send_request("GET", "/api/v1/futures/market/depth", query={"symbol": symbol, "limit": 1})
     if not ticker_resp or "data" not in ticker_resp:
         print("❌ Failed to fetch order book data.")
         return None
@@ -128,11 +132,8 @@ def place_limit_order(symbol, side, quantity, sl=None, tp=None, guaranteed_sl=Fa
         "takeProfitPrice": tp,
         "guaranteedStopLoss": guaranteed_sl
     }
-
-    # Remove keys with None values
     order_body = {k: v for k, v in order_body.items() if v is not None}
-
-    # For POST requests, query_params for signature are None
+    
     return send_request("POST", "/api/v1/futures/trade/place_order", body=order_body)
 
 # ------------------------------------------------------------
@@ -142,7 +143,6 @@ def partial_position_close(symbol, quantity):
     print(f"Partial closing {quantity} of {symbol}")
     endpoint = "/api/v1/futures/trade/close_partial_position"
     body = {"symbol": symbol, "quantity": quantity}
-    # For POST requests, query_params for signature are None
     return send_request("POST", endpoint, body=body)
 
 # ------------------------------------------------------------
@@ -150,43 +150,49 @@ def partial_position_close(symbol, quantity):
 # ------------------------------------------------------------
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    data = request.get_json()
-    if not data:
-        return jsonify({"status": "error", "message": "No JSON payload received"}), 400
+    try:
+        data = request.get_json()
+        if not data:
+            print("Received non-JSON payload, or no payload.")
+            return jsonify({"status": "error", "message": "Expected JSON payload"}), 415
 
-    print("Received alert payload:", data)
+        print("Received alert payload:", data)
 
-    symbol = data.get("symbol")
-    side = data.get("side")
-    quantity = data.get("quantity")
-    sl = data.get("sl")
-    tp = data.get("tp")
-    guaranteed_sl = data.get("guaranteed_stop_loss", False)
+        symbol = data.get("symbol")
+        side = data.get("side")
+        quantity = data.get("quantity")
+        sl = data.get("sl")
+        tp = data.get("tp")
+        guaranteed_sl = data.get("guaranteed_stop_loss", False)
 
-    if not symbol or not side or not quantity:
-        return jsonify({"status": "error", "message": "Missing required fields (symbol, side, quantity)"}), 400
+        if not symbol or not side or quantity is None:
+            return jsonify({"status": "error", "message": "Missing required fields (symbol, side, quantity)"}), 400
+        
+        # Handle the case where quantity is 0, implying a close all operation
+        if float(quantity) == 0.0:
+            print("Received quantity of 0.0, closing all positions.")
+            resp = close_all_positions(symbol)
+            if resp and resp.get('code') == 0:
+                return jsonify({"status": "success", "message": "Closed all positions"}), 200
+            else:
+                return jsonify({"status": "failed", "message": resp.get('msg', 'Unknown error')}), 500
 
-    # Close all open positions first
-    close_all_positions(symbol)
+        # Place new limit order for non-zero quantity
+        resp = place_limit_order(symbol, side, quantity, sl, tp, guaranteed_sl)
 
-    # Place new limit order
-    resp = place_limit_order(symbol, side, quantity, sl, tp, guaranteed_sl)
+        if resp and resp.get('code') == 0:
+            return jsonify({"status": "success", "response": resp}), 200
+        else:
+            return jsonify({"status": "failed", "message": resp.get('msg', 'Unknown error')}), 500
 
-    if resp:
-        return jsonify({"status": "success", "response": resp})
-    else:
-        return jsonify({"status": "failed"}), 500
+    except Exception as e:
+        print(f"An unexpected error occurred: {e}")
+        return jsonify({"status": "failed", "message": "Internal Server Error"}), 500
 
 # ------------------------------------------------------------
 # ✅ Run server
 # ------------------------------------------------------------
 if __name__ == "__main__":
-    # Ensure API keys are set for testing locally (or in production)
     if not BITUNIX_API_KEY or not BITUNIX_API_SECRET:
         print("WARNING: BITUNIX_API_KEY or BITUNIX_API_SECRET environment variables are not set.")
-        print("Please set them before running the application.")
-        # For demonstration purposes, you might want to exit or use dummy values if running without env vars.
-        # exit(1) 
-
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
-
