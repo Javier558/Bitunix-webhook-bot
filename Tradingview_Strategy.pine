@@ -15,8 +15,10 @@ tp_percent = input.float(0.5, 'Take Profit (%)', step = 0.1)
 sl_percent = input.float(0.01, 'Stop Loss (%)', step = 0.1)
 start_hour = input.int(21, 'First trade hour (24h)')
 start_minute = input.int(0, 'First trade minute')
+min_order_qty = input.float(0.001, "Minimum order quantity")  // Adjust per asset
+asset_precision = input.int(3, "Quantity decimal places")      // Adjust per asset
 
-// === STATE VARIABLES (declared up-front) ===
+// === STATE VARIABLES ===
 var int direction = 1 // 1 = long, -1 = short
 var bool firstTradeDone = false
 var float sl_price = na
@@ -26,7 +28,6 @@ var float exit_price = na
 var float profitPerc = na
 var float initial_equity = na
 
-// current position size (series)
 pos_size = strategy.position_size
 
 if barstate.isfirst
@@ -56,12 +57,11 @@ else if pos_size < 0
     strategy.exit('ExitShort', from_entry = 'Short', stop = sl_price, limit = tp_price)
 
 // === 4) Detect closed position and immediately re-enter ===
-was_in_position_prev = strategy.position_size[1] != 0 // Use [1] for previous bar
+was_in_position_prev = strategy.position_size[1] != 0
 now_flat = pos_size == 0
 
 if was_in_position_prev and now_flat
     exit_price := close
-
     if strategy.position_size[1] > 0
         profitPerc := (exit_price - last_entry_price) / last_entry_price * 100
     else
@@ -78,40 +78,48 @@ if was_in_position_prev and now_flat
         strategy.entry('Short', strategy.short)
 
 // === 5) Dynamic quantity (15% of equity) ===
-// Get current equity in USD
 position_value_usd = initial_equity * 0.15
-
-// Estimate quantity (contracts or coin units)
 qty = position_value_usd / close
 
-// === 6) Webhook alert ===
-// Only send alert if sl_price and tp_price have been calculated (i.e., we are in a trade)
+// Round qty to asset precision and ensure minimum order size
+qty := math.max(math.round(qty * math.pow(10, asset_precision)) / math.pow(10, asset_precision), min_order_qty)
+
+/// === 6) Webhook alert (safe JSON) ===
+// Declare string variables upfront
+var string sl_str = ""
+var string tp_str = ""
+var string qty_str = ""
 var string symbol_to_send = ""
+var string alert_msg = ""
 
 if not na(sl_price) and not na(tp_price)
     side_str = direction == 1 ? "buy" : "sell"
-    
-    // Extract the raw symbol (e.g., "BTCUSDT") from the full ticker ID (e.g., "BITUNIX:BTCUSDT")
-    var string symbol_to_send = na
+
+    // Extract raw symbol
     if str.contains(syminfo.tickerid, ":")
-        // Split the ticker ID by ":" and take the last part
         symbol_parts = str.split(syminfo.tickerid, ":")
         symbol_to_send := array.get(symbol_parts, array.size(symbol_parts) - 1)
     else
-        // If no ":" is present, assume it's already the raw symbol
         symbol_to_send := syminfo.tickerid
 
-    sl_str = str.tostring(sl_price, format.mintick)
-    tp_str = str.tostring(tp_price, format.mintick)
-    qty_str = str.tostring(qty, format.mintick)
+    // Convert numeric values to string with proper precision
+    sl_str := str.tostring(sl_price, format.mintick)
+    tp_str := str.tostring(tp_price, format.mintick)
+    qty_str := str.tostring(qty, format.mintick)
 
-    // Build the JSON alert message using the cleaned symbol name
-    alert_msg = "{\"side\":\"" + side_str + "\",\"symbol\":\"" + symbol_to_send + "\",\"sl\":" + sl_str + ",\"tp\":" + tp_str + ",\"quantity\":" + qty_str + ",\"guaranteed_stop_loss\":true}"
+    // Build JSON string manually
+    alert_msg := '{"side":"' + side_str + '",' +
+                  '"symbol":"' + symbol_to_send + '",' +
+                  '"sl":' + sl_str + ',' +
+                  '"tp":' + tp_str + ',' +
+                  '"quantity":' + qty_str + ',' +
+                  '"guaranteed_stop_loss":true}'
+
     alert(alert_msg, alert.freq_once_per_bar)
 
-// === Debug labels (optional) ===
+
+
+// === Debug labels ===
 var showDebug = input.bool(false, 'Show debug labels')
 if showDebug
     label.new(bar_index, high, text = 'dir: ' + str.tostring(direction) + '\ninitial_equity: ' + str.tostring(initial_equity, format.mintick) + '\nSymbol: ' + symbol_to_send, yloc = yloc.abovebar, style = label.style_label_left, textcolor = color.white, size = size.small)
-
-
