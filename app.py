@@ -8,40 +8,28 @@ import uuid
 
 app = Flask(__name__)
 
-# Environment Variables for Security
+# Environment Variables
 BITUNIX_API_KEY = os.getenv("BITUNIX_API_KEY")
 BITUNIX_API_SECRET = os.getenv("BITUNIX_API_SECRET")
 
-BASE_URL = "https://api.bitunix.com"  # Main endpoint
+BASE_URL = "https://fapi.bitunix.com"  # Bitunix base URL
+LEVERAGE = 50
+RETRY_DELAY = 0.5
+MAX_RETRIES = 5
 
 # ------------------------------------------------------------
-# ✅ Correct Bitunix Signature Function
+# ✅ Bitunix Signature Function
 # ------------------------------------------------------------
 def generate_signature(api_key, secret_key, query_params=None, body=None):
-    """
-    Returns headers including api-key, nonce, timestamp, and sign.
-    Matches Bitunix official documentation exactly.
-    """
-    nonce = str(uuid.uuid4()).replace("-", "")[:32]  # 32-char random string
-    timestamp = str(int(time.time() * 1000))  # milliseconds
+    nonce = str(uuid.uuid4()).replace("-", "")[:32]
+    timestamp = str(int(time.time() * 1000))
 
-    # Convert query params to sorted ASCII string
-    if query_params:
-        sorted_query = ''.join(f"{k}{v}" for k, v in sorted(query_params.items()))
-    else:
-        sorted_query = ''
+    sorted_query = ''.join(f"{k}{v}" for k, v in sorted(query_params.items())) if query_params else ''
+    body_str = json.dumps(body, separators=(',', ':')) if body else ''
 
-    # Convert body to compact JSON string (no spaces)
-    if body:
-        body_str = json.dumps(body, separators=(',', ':'))
-    else:
-        body_str = ''
-
-    # Step 1: digest
     digest_input = nonce + timestamp + api_key + sorted_query + body_str
     digest = hashlib.sha256(digest_input.encode('utf-8')).hexdigest()
 
-    # Step 2: final sign
     sign_input = digest + secret_key
     sign = hashlib.sha256(sign_input.encode('utf-8')).hexdigest()
 
@@ -54,18 +42,17 @@ def generate_signature(api_key, secret_key, query_params=None, body=None):
     }
     return headers
 
-
 # ------------------------------------------------------------
-# ✅ Helper Functions
+# ✅ Request Helper with Retries
 # ------------------------------------------------------------
-def send_request(method, endpoint, body=None, query=None, retries=5):
+def send_request(method, endpoint, body=None, query=None):
     url = f"{BASE_URL}{endpoint}"
     headers = generate_signature(BITUNIX_API_KEY, BITUNIX_API_SECRET, query, body)
     print("Sending request:", method, url)
-    print("Headers being sent:", headers)
-    print("Body being sent:", body)
+    print("Headers:", headers)
+    print("Body:", body)
 
-    for attempt in range(1, retries + 1):
+    for attempt in range(1, MAX_RETRIES + 1):
         try:
             if method == "POST":
                 r = requests.post(url, headers=headers, json=body, timeout=10)
@@ -74,45 +61,50 @@ def send_request(method, endpoint, body=None, query=None, retries=5):
             else:
                 r = requests.get(url, headers=headers, params=query, timeout=10)
 
-            response_json = r.json()
-            print(f"Attempt {attempt}: {response_json}")
+            resp_json = r.json()
+            print(f"Attempt {attempt}: {resp_json}")
 
-            # If successful response
-            if response_json.get("code") == 0:
-                return response_json
+            if resp_json.get("code") == 0:
+                return resp_json
             else:
-                time.sleep(1)
-
+                time.sleep(RETRY_DELAY)
         except Exception as e:
-            print(f"Error on attempt {attempt}: {e}")
-            time.sleep(1)
+            print(f"Error attempt {attempt}: {e}")
+            time.sleep(RETRY_DELAY)
     return None
 
-
 # ------------------------------------------------------------
-# ✅ Core Trading Functions
+# ✅ Close all positions for a symbol
 # ------------------------------------------------------------
 def close_all_positions(symbol):
     print("Closing all open positions...")
-    endpoint = "/v1/private/position/close-all"
+    endpoint = "/api/v1/futures/trade/close_all_position"
     body = {"symbol": symbol}
     return send_request("POST", endpoint, body=body)
 
-
-def place_limit_order(symbol, side, quantity, sl, tp, guaranteed_sl=False):
-    """
-    Places a limit order using the last price, sets SL/TP, supports guaranteed SL.
-    """
-    # Get current price
-    ticker_resp = send_request("GET", f"/v1/public/ticker", query={"symbol": symbol})
+# ------------------------------------------------------------
+# ✅ Place limit order with SL/TP and guaranteed SL
+# ------------------------------------------------------------
+def place_limit_order(symbol, side, quantity, sl=None, tp=None, guaranteed_sl=False):
+    # Get order book (bids/asks)
+    ticker_resp = send_request("GET", "/api/v1/futures/market/depth", query={"symbol": symbol, "limit": "max"})
     if not ticker_resp or "data" not in ticker_resp:
-        print("❌ Failed to fetch ticker data.")
+        print("❌ Failed to fetch order book data.")
         return None
 
-    last_price = float(ticker_resp["data"].get("lastPrice", 0))
-    print(f"✅ Last price for {symbol}: {last_price}")
+    data = ticker_resp["data"]
+    bids = data.get("bids", [])
+    asks = data.get("asks", [])
 
-    # Prepare order body
+    if not bids or not asks:
+        print("❌ Empty bids or asks")
+        return None
+
+    highest_bid = float(bids[0][0])
+    lowest_ask = float(asks[0][0])
+    last_price = (highest_bid + lowest_ask) / 2
+    print(f"Calculated last price for {symbol}: {last_price}")
+
     order_body = {
         "symbol": symbol,
         "side": side,
@@ -120,27 +112,28 @@ def place_limit_order(symbol, side, quantity, sl, tp, guaranteed_sl=False):
         "price": last_price,
         "quantity": quantity,
         "timeInForce": "GTC",
+        "leverage": LEVERAGE,
         "stopLossPrice": sl,
         "takeProfitPrice": tp,
         "guaranteedStopLoss": guaranteed_sl
     }
 
-    endpoint = "/v1/private/order/create"
-    return send_request("POST", endpoint, body=order_body)
+    # Remove keys with None values
+    order_body = {k: v for k, v in order_body.items() if v is not None}
 
+    return send_request("POST", "/api/v1/futures/trade/place_order", body=order_body)
 
+# ------------------------------------------------------------
+# ✅ Partial position closing
+# ------------------------------------------------------------
 def partial_position_close(symbol, quantity):
-    """
-    Closes part of an open position.
-    """
-    print(f"Partial position closing for {symbol}, qty: {quantity}")
-    endpoint = "/v1/private/position/close-partial"
+    print(f"Partial closing {quantity} of {symbol}")
+    endpoint = "/api/v1/futures/trade/close_partial_position"
     body = {"symbol": symbol, "quantity": quantity}
     return send_request("POST", endpoint, body=body)
 
-
 # ------------------------------------------------------------
-# ✅ Flask Route (Main Entry)
+# ✅ Webhook route
 # ------------------------------------------------------------
 @app.route("/webhook", methods=["POST"])
 def webhook():
@@ -168,9 +161,8 @@ def webhook():
     else:
         return jsonify({"status": "failed"}), 500
 
-
 # ------------------------------------------------------------
-# ✅ Run Server
+# ✅ Run server
 # ------------------------------------------------------------
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
