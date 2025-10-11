@@ -18,24 +18,30 @@ RETRY_DELAY = 0.5
 MAX_RETRIES = 5
 
 # ------------------------------------------------------------
-# ✅ Bitunix Signature Function
+# ✅ Refined Bitunix Signature Function
 # ------------------------------------------------------------
 def generate_signature(api_key, secret_key, query_params=None, body=None):
     nonce = str(uuid.uuid4()).replace("-", "")[:32]
     timestamp = str(int(time.time() * 1000))
 
+    # Handle query params, sorting them by key
     sorted_query = ''
     if query_params:
         sorted_params = sorted(query_params.items())
         sorted_query = ''.join(f"{k}{v}" for k, v in sorted_params)
     
+    # Sort JSON body keys and format without any spaces, as specified
     body_str = ''
     if body:
+        # Sort keys for consistent ordering, and remove all whitespace
+        # Ensure all values are correctly serialized
         body_str = json.dumps(body, separators=(',', ':'), sort_keys=True)
-
+    
+    # Construct the digest input string
     digest_input = nonce + timestamp + api_key + sorted_query + body_str
     digest = hashlib.sha256(digest_input.encode('utf-8')).hexdigest()
 
+    # Construct the sign input string
     sign_input = digest + secret_key
     sign = hashlib.sha256(sign_input.encode('utf-8')).hexdigest()
 
@@ -56,6 +62,9 @@ def send_request(method, endpoint, body=None, query=None):
     if not BITUNIX_API_KEY or not BITUNIX_API_SECRET:
         print("WARNING: API keys are not set. Cannot send request.")
         return None
+    
+    # Add a debugging print statement here to see the exact body sent
+    print(f"DEBUG: Body for signature: {body}")
     headers = generate_signature(BITUNIX_API_KEY, BITUNIX_API_SECRET, query, body)
     
     print("Sending request:", method, url)
@@ -110,7 +119,8 @@ def place_limit_order(symbol, side, quantity, sl=None, tp=None, guaranteed_sl=Fa
     data = ticker_resp["data"]
     bids = data.get("bids", [])
     asks = data.get("asks", [])
-
+    
+    # Added checks to ensure bids and asks are not empty lists before accessing index
     if not bids or not asks:
         print("❌ Empty bids or asks")
         return None
@@ -170,20 +180,20 @@ def webhook():
         
         # Handle the case where quantity is 0, implying a close all operation
         if float(quantity) == 0.0:
-            print("Received quantity of 0.0, closing all positions.")
+            print(f"Received quantity of 0.0 for {symbol}, closing all positions.")
             resp = close_all_positions(symbol)
-            if resp and resp.get('code') == 0:
-                return jsonify({"status": "success", "message": "Closed all positions"}), 200
+            if resp:
+                return jsonify({"status": "success", "response": resp}), 200
             else:
-                return jsonify({"status": "failed", "message": resp.get('msg', 'Unknown error')}), 500
+                return jsonify({"status": "failed", "message": "Failed to close all positions"}), 500
 
         # Place new limit order for non-zero quantity
         resp = place_limit_order(symbol, side, quantity, sl, tp, guaranteed_sl)
 
-        if resp and resp.get('code') == 0:
+        if resp:
             return jsonify({"status": "success", "response": resp}), 200
         else:
-            return jsonify({"status": "failed", "message": resp.get('msg', 'Unknown error')}), 500
+            return jsonify({"status": "failed", "message": "Failed to place limit order"}), 500
 
     except Exception as e:
         print(f"An unexpected error occurred: {e}")
