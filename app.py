@@ -29,21 +29,17 @@ def generate_signature(api_key, secret_key, query_params=None, body=None):
     if query_params:
         sorted_params = sorted(query_params.items())
         sorted_query = ''.join(f"{k}{v}" for k, v in sorted_params)
-    
-    # Sort JSON body keys and format without any spaces, as specified
+
+    # Handle body (JSON)
     body_str = ''
     if body:
-        # Sort keys for consistent ordering, and remove all whitespace
-        # Ensure all values are correctly serialized
         body_str = json.dumps(body, separators=(',', ':'), sort_keys=True)
-    
-    # Construct the digest input string
-    digest_input = nonce + timestamp + api_key + sorted_query + body_str
-    digest = hashlib.sha256(digest_input.encode('utf-8')).hexdigest()
 
-    # Construct the sign input string
-    sign_input = digest + secret_key
-    sign = hashlib.sha256(sign_input.encode('utf-8')).hexdigest()
+    # Digest and sign
+    digest_input = (nonce + timestamp + api_key + sorted_query + body_str).encode('utf-8')
+    digest = hashlib.sha256(digest_input).hexdigest()
+    sign_input = (digest + secret_key).encode('utf-8')
+    sign = hashlib.sha256(sign_input).hexdigest()
 
     headers = {
         "api-key": api_key,
@@ -60,31 +56,21 @@ def generate_signature(api_key, secret_key, query_params=None, body=None):
 def send_request(method, endpoint, body=None, query=None):
     url = f"{BASE_URL}{endpoint}"
     if not BITUNIX_API_KEY or not BITUNIX_API_SECRET:
-        print("WARNING: API keys are not set. Cannot send request.")
+        print("WARNING: API keys are not set.")
         return None
-    
-    # Add a debugging print statement here to see the exact body sent
-    print(f"DEBUG: Body for signature: {body}")
-    headers = generate_signature(BITUNIX_API_KEY, BITUNIX_API_SECRET, query, body)
-    
-    print("Sending request:", method, url)
-    print("Headers:", headers)
-    print("Body:", body)
-    print("Query:", query)
 
+    headers = generate_signature(BITUNIX_API_KEY, BITUNIX_API_SECRET, query, body)
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            if method == "POST":
+            if method.upper() == "POST":
                 r = requests.post(url, headers=headers, json=body, timeout=10)
-            elif method == "DELETE":
+            elif method.upper() == "DELETE":
                 r = requests.delete(url, headers=headers, json=body, timeout=10)
             else:
                 r = requests.get(url, headers=headers, params=query, timeout=10)
 
-            r.raise_for_status() # Raise an exception for bad status codes
+            r.raise_for_status()
             resp_json = r.json()
-            print(f"Attempt {attempt}: {resp_json}")
-
             if resp_json.get("code") == 0:
                 return resp_json
             else:
@@ -99,13 +85,27 @@ def send_request(method, endpoint, body=None, query=None):
     return None
 
 # ------------------------------------------------------------
+# ✅ Get Open Positions
+# ------------------------------------------------------------
+def get_open_positions(symbol):
+    resp = send_request("GET", "/api/v1/futures/trade/positions", query={"symbol": symbol})
+    if resp and "data" in resp:
+        return [p for p in resp["data"] if float(p.get("positionAmt", 0)) != 0]
+    return []
+
+# ------------------------------------------------------------
 # ✅ Close all positions for a symbol
 # ------------------------------------------------------------
 def close_all_positions(symbol):
-    print("Closing all open positions...")
+    positions = get_open_positions(symbol)
+    if not positions:
+        return {"code": 1, "msg": "No open positions to close"}
     endpoint = "/api/v1/futures/trade/close_all_position"
     body = {"symbol": symbol}
-    return send_request("POST", endpoint, body=body)
+    resp = send_request("POST", endpoint, body=body)
+    if resp:
+        return resp
+    return {"code": 1, "msg": "Failed to close all positions"}
 
 # ------------------------------------------------------------
 # ✅ Place limit order with SL/TP and guaranteed SL
@@ -119,16 +119,12 @@ def place_limit_order(symbol, side, quantity, sl=None, tp=None, guaranteed_sl=Fa
     data = ticker_resp["data"]
     bids = data.get("bids", [])
     asks = data.get("asks", [])
-    
-    # Added checks to ensure bids and asks are not empty lists before accessing index
+
     if not bids or not asks:
         print("❌ Empty bids or asks")
         return None
 
-    highest_bid = float(bids[0][0])
-    lowest_ask = float(asks[0][0])
-    last_price = (highest_bid + lowest_ask) / 2
-    print(f"Calculated last price for {symbol}: {last_price}")
+    last_price = (float(bids[0][0]) + float(asks[0][0])) / 2
 
     order_body = {
         "symbol": symbol,
@@ -142,18 +138,10 @@ def place_limit_order(symbol, side, quantity, sl=None, tp=None, guaranteed_sl=Fa
         "takeProfitPrice": tp,
         "guaranteedStopLoss": guaranteed_sl
     }
+    # Remove None values
     order_body = {k: v for k, v in order_body.items() if v is not None}
-    
-    return send_request("POST", "/api/v1/futures/trade/place_order", body=order_body)
 
-# ------------------------------------------------------------
-# ✅ Partial position closing
-# ------------------------------------------------------------
-def partial_position_close(symbol, quantity):
-    print(f"Partial closing {quantity} of {symbol}")
-    endpoint = "/api/v1/futures/trade/close_partial_position"
-    body = {"symbol": symbol, "quantity": quantity}
-    return send_request("POST", endpoint, body=body)
+    return send_request("POST", "/api/v1/futures/trade/place_order", body=order_body)
 
 # ------------------------------------------------------------
 # ✅ Webhook route
@@ -163,10 +151,7 @@ def webhook():
     try:
         data = request.get_json()
         if not data:
-            print("Received non-JSON payload, or no payload.")
             return jsonify({"status": "error", "message": "Expected JSON payload"}), 415
-
-        print("Received alert payload:", data)
 
         symbol = data.get("symbol")
         side = data.get("side")
@@ -176,27 +161,24 @@ def webhook():
         guaranteed_sl = data.get("guaranteed_stop_loss", False)
 
         if not symbol or not side or quantity is None:
-            return jsonify({"status": "error", "message": "Missing required fields (symbol, side, quantity)"}), 400
-        
-        # Handle the case where quantity is 0, implying a close all operation
+            return jsonify({"status": "error", "message": "Missing required fields"}), 400
+
         if float(quantity) == 0.0:
-            print(f"Received quantity of 0.0 for {symbol}, closing all positions.")
             resp = close_all_positions(symbol)
-            if resp:
+            if resp.get("code") == 0:
                 return jsonify({"status": "success", "response": resp}), 200
             else:
-                return jsonify({"status": "failed", "message": "Failed to close all positions"}), 500
+                return jsonify({"status": "failed", "message": resp.get("msg")}), 500
 
-        # Place new limit order for non-zero quantity
+        # Place limit order
         resp = place_limit_order(symbol, side, quantity, sl, tp, guaranteed_sl)
-
         if resp:
             return jsonify({"status": "success", "response": resp}), 200
         else:
             return jsonify({"status": "failed", "message": "Failed to place limit order"}), 500
 
     except Exception as e:
-        print(f"An unexpected error occurred: {e}")
+        print(f"Unexpected error: {e}")
         return jsonify({"status": "failed", "message": "Internal Server Error"}), 500
 
 # ------------------------------------------------------------
