@@ -15,8 +15,8 @@ tp_percent = input.float(0.5, 'Take Profit (%)', step = 0.1)
 sl_percent = input.float(0.01, 'Stop Loss (%)', step = 0.1)
 start_hour = input.int(21, 'First trade hour (24h)')
 start_minute = input.int(0, 'First trade minute')
-min_order_qty = input.float(0.001, "Minimum order quantity")  // Adjust per asset
-asset_precision = input.int(3, "Quantity decimal places")      // Adjust per asset
+min_order_qty = input.float(0.001, "Minimum order quantity")  
+asset_precision = input.int(3, "Quantity decimal places")      
 
 // === STATE VARIABLES ===
 var int direction = 1 // 1 = long, -1 = short
@@ -33,7 +33,7 @@ pos_size = strategy.position_size
 if barstate.isfirst
     initial_equity := strategy.equity
 
-// === 1) First trade at 21:00 (only once) ===
+// === 1) First trade at 21:00 ===
 isStartBar = hour(time) == start_hour and minute(time) == start_minute
 if isStartBar and not firstTradeDone and pos_size == 0
     if direction == 1
@@ -42,11 +42,11 @@ if isStartBar and not firstTradeDone and pos_size == 0
         strategy.entry('Short', strategy.short)
     firstTradeDone := true
 
-// === 2) Capture entry price once a position opens ===
+// === 2) Capture entry price ===
 if pos_size != 0 and na(last_entry_price)
     last_entry_price := strategy.position_avg_price
 
-// === 3) Compute SL/TP absolute price levels and attach strategy.exit ===
+// === 3) Compute SL/TP and attach exit ===
 if pos_size > 0
     sl_price := strategy.position_avg_price * (1 - sl_percent / 100)
     tp_price := strategy.position_avg_price * (1 + tp_percent / 100)
@@ -56,22 +56,16 @@ else if pos_size < 0
     tp_price := strategy.position_avg_price * (1 - tp_percent / 100)
     strategy.exit('ExitShort', from_entry = 'Short', stop = sl_price, limit = tp_price)
 
-// === 4) Detect closed position and immediately re-enter ===
+// === 4) Re-entry after closed position ===
 was_in_position_prev = strategy.position_size[1] != 0
 now_flat = pos_size == 0
 
 if was_in_position_prev and now_flat
     exit_price := close
-    if strategy.position_size[1] > 0
-        profitPerc := (exit_price - last_entry_price) / last_entry_price * 100
-    else
-        profitPerc := (last_entry_price - exit_price) / last_entry_price * 100
-
+    profitPerc := strategy.position_size[1] > 0 ? (exit_price - last_entry_price) / last_entry_price * 100 : (last_entry_price - exit_price) / last_entry_price * 100
     if profitPerc < 0
         direction := -direction
-
     last_entry_price := na
-
     if direction == 1
         strategy.entry('Long', strategy.long)
     else
@@ -80,12 +74,9 @@ if was_in_position_prev and now_flat
 // === 5) Dynamic quantity (15% of equity) ===
 position_value_usd = initial_equity * 0.15
 qty = position_value_usd / close
-
-// Round qty to asset precision and ensure minimum order size
 qty := math.max(math.round(qty * math.pow(10, asset_precision)) / math.pow(10, asset_precision), min_order_qty)
 
-/// === 6) Webhook alert (safe JSON) ===
-// Declare string variables upfront
+// === 6) Webhook JSON builder ===
 var string sl_str = ""
 var string tp_str = ""
 var string qty_str = ""
@@ -95,20 +86,17 @@ var string alert_msg = ""
 if not na(sl_price) and not na(tp_price)
     side_str = direction == 1 ? "buy" : "sell"
 
-    // Extract raw symbol
-    if str.contains(syminfo.tickerid, ":")
-        symbol_parts = str.split(syminfo.tickerid, ":")
-        symbol_to_send := array.get(symbol_parts, array.size(symbol_parts) - 1)
-    else
-        symbol_to_send := syminfo.tickerid
+    // Remove exchange prefix
+    symbol_to_send := str.contains(syminfo.tickerid, ":") ? array.get(str.split(syminfo.tickerid, ":"), 1) : syminfo.tickerid
 
-    // Convert numeric values to string with proper precision
+    // Convert numeric values
     sl_str := str.tostring(sl_price, format.mintick)
     tp_str := str.tostring(tp_price, format.mintick)
     qty_str := str.tostring(qty, format.mintick)
 
-    // Build JSON string manually
-    alert_msg := '{"side":"' + side_str + '",' +
+    // Safe JSON
+    alert_msg := '{' +
+                  '"side":"' + side_str + '",' +
                   '"symbol":"' + symbol_to_send + '",' +
                   '"sl":' + sl_str + ',' +
                   '"tp":' + tp_str + ',' +
@@ -117,9 +105,7 @@ if not na(sl_price) and not na(tp_price)
 
     alert(alert_msg, alert.freq_once_per_bar)
 
-
-
-// === Debug labels ===
+// === Debug ===
 var showDebug = input.bool(false, 'Show debug labels')
 if showDebug
-    label.new(bar_index, high, text = 'dir: ' + str.tostring(direction) + '\ninitial_equity: ' + str.tostring(initial_equity, format.mintick) + '\nSymbol: ' + symbol_to_send, yloc = yloc.abovebar, style = label.style_label_left, textcolor = color.white, size = size.small)
+    label.new(bar_index, high, text = 'dir: ' + str.tostring(direction) + '\nSymbol: ' + symbol_to_send + '\nQty: ' + qty_str, yloc = yloc.abovebar, style = label.style_label_left, textcolor = color.white, size = size.small)
