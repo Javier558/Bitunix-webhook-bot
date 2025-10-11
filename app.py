@@ -24,8 +24,17 @@ def generate_signature(api_key, secret_key, query_params=None, body=None):
     nonce = str(uuid.uuid4()).replace("-", "")[:32]
     timestamp = str(int(time.time() * 1000))
 
-    sorted_query = ''.join(f"{k}{v}" for k, v in sorted(query_params.items())) if query_params else ''
-    body_str = json.dumps(body, separators=(',', ':')) if body else ''
+    # Sort query params by key and concatenate
+    sorted_query = ''
+    if query_params:
+        sorted_params = sorted(query_params.items())
+        sorted_query = ''.join(f"{k}{v}" for k, v in sorted_params)
+    
+    # Sort JSON body keys and format without spaces
+    body_str = ''
+    if body:
+        # Use sort_keys=True to correctly format the body for the signature
+        body_str = json.dumps(body, separators=(',', ':'), sort_keys=True)
 
     digest_input = nonce + timestamp + api_key + sorted_query + body_str
     digest = hashlib.sha256(digest_input.encode('utf-8')).hexdigest()
