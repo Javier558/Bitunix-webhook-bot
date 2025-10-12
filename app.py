@@ -33,44 +33,46 @@ ASSET_PRECISION = {
 # --------------------- Signature ---------------------
 def generate_signature(api_key, secret_key, query_params=None, body=None):
     """
-    Bitunix signature rules:
-      digest = SHA256(nonce + timestamp + apiKey + queryParams + body)
-      sign   = SHA256(digest + secretKey)
-    where queryParams = concatenation of k+v in ASCII order (no '&'),
-          body = exact compact JSON string (no spaces)
+    Bitunix signature (confirmed working):
+      1. digest = SHA256(nonce + timestamp + apiKey + queryParams + body).upper()
+      2. sign   = SHA256(digest + secretKey).upper()
+    All concatenated values are plain strings.
+    queryParams = concatenation of key+value sorted alphabetically.
+    body = compact JSON (no spaces).
     """
+    import hashlib, uuid, json, time
+
     nonce = str(uuid.uuid4()).replace("-", "")[:32]
     timestamp = str(int(time.time() * 1000))
 
-    # Build query string
-    sorted_query = ''
+    # Step 1: build query string
+    sorted_query = ""
     if query_params:
-        # Must be key+value concatenation, not with '&'
         sorted_items = sorted(query_params.items(), key=lambda x: x[0])
-        sorted_query = ''.join([str(k) + str(v) for k, v in sorted_items])
+        sorted_query = "".join(f"{k}{v}" for k, v in sorted_items)
 
-    # Body must be exactly like sent to API
-    body_str = ''
+    # Step 2: compact JSON body (exact same string as request)
+    body_str = ""
     if body:
-        # Make sure keys are sorted, compact JSON, ASCII
-        body_str = json.dumps(body, ensure_ascii=False, separators=(',', ':'), sort_keys=True)
+        body_str = json.dumps(body, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
 
-    # Step 1: digest
-    digest_input = (nonce + timestamp + api_key + sorted_query + body_str).encode('utf-8')
-    digest = hashlib.sha256(digest_input).hexdigest()
+    # Step 3: first hash (digest)
+    digest_raw = (nonce + timestamp + api_key + sorted_query + body_str).encode("utf-8")
+    digest_hex = hashlib.sha256(digest_raw).hexdigest().upper()
 
-    # Step 2: sign = SHA256(digest + secret_key)
-    sign_input = (digest + secret_key).encode('utf-8')
-    sign = hashlib.sha256(sign_input).hexdigest()
+    # Step 4: second hash (sign)
+    sign_raw = (digest_hex + secret_key).encode("utf-8")
+    sign_hex = hashlib.sha256(sign_raw).hexdigest().upper()
 
     headers = {
         "api-key": api_key,
         "nonce": nonce,
         "timestamp": timestamp,
-        "sign": sign,
+        "sign": sign_hex,
         "Content-Type": "application/json"
     }
     return headers
+
 
 # --------------------- Request Helper ---------------------
 def send_request(method, endpoint, body=None, query=None):
@@ -108,8 +110,7 @@ def send_request(method, endpoint, body=None, query=None):
         except requests.exceptions.RequestException as e:
             print(f"Request error attempt {attempt}: {e}")
         time.sleep(RETRY_DELAY)
-    print("Generated headers:", headers)
-    print("Body:", body)
+
     return None
 
 # --------------------- Open Positions ---------------------
