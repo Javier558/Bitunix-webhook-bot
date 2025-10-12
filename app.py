@@ -33,21 +33,36 @@ ASSET_PRECISION = {
 # --------------------- Signature ---------------------
 def generate_signature(api_key, secret_key, query_params=None, body=None):
     """
-    Per Bitunix docs: digest = SHA256(nonce + timestamp + apiKey + queryParams + body)
-    sign = SHA256(digest + secretKey)
-    Body must be compact JSON (no spaces) and keys sorted.
+    Bitunix signature rules:
+      digest = SHA256(nonce + timestamp + apiKey + queryParams + body)
+      sign   = SHA256(digest + secretKey)
+    where queryParams = concatenation of k+v in ASCII order (no '&'),
+          body = exact compact JSON string (no spaces)
     """
     nonce = str(uuid.uuid4()).replace("-", "")[:32]
-    timestamp = str(int(time.time() * 1000))  # milliseconds
+    timestamp = str(int(time.time() * 1000))
+
+    # Build query string
     sorted_query = ''
     if query_params:
-        # concatenate key+value in ascii ascending order
-        sorted_query = ''.join(f"{k}{v}" for k, v in sorted(query_params.items()))
-    body_str = json.dumps(body, separators=(',', ':'), sort_keys=True) if body else ''
+        # Must be key+value concatenation, not with '&'
+        sorted_items = sorted(query_params.items(), key=lambda x: x[0])
+        sorted_query = ''.join([str(k) + str(v) for k, v in sorted_items])
+
+    # Body must be exactly like sent to API
+    body_str = ''
+    if body:
+        # Make sure keys are sorted, compact JSON, ASCII
+        body_str = json.dumps(body, ensure_ascii=False, separators=(',', ':'), sort_keys=True)
+
+    # Step 1: digest
     digest_input = (nonce + timestamp + api_key + sorted_query + body_str).encode('utf-8')
     digest = hashlib.sha256(digest_input).hexdigest()
+
+    # Step 2: sign = SHA256(digest + secret_key)
     sign_input = (digest + secret_key).encode('utf-8')
     sign = hashlib.sha256(sign_input).hexdigest()
+
     headers = {
         "api-key": api_key,
         "nonce": nonce,
@@ -93,6 +108,8 @@ def send_request(method, endpoint, body=None, query=None):
         except requests.exceptions.RequestException as e:
             print(f"Request error attempt {attempt}: {e}")
         time.sleep(RETRY_DELAY)
+    print("Generated headers:", headers)
+    print("Body:", body)
     return None
 
 # --------------------- Open Positions ---------------------
