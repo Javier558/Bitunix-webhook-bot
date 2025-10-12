@@ -32,50 +32,79 @@ ASSET_PRECISION = {
 
 # --------------------- Signature ---------------------
 def generate_signature(api_key, secret_key, query_params=None, body=None):
+    """
+    Per Bitunix docs: digest = SHA256(nonce + timestamp + apiKey + queryParams + body)
+    sign = SHA256(digest + secretKey)
+    Body must be compact JSON (no spaces) and keys sorted.
+    """
     nonce = str(uuid.uuid4()).replace("-", "")[:32]
-    timestamp = str(int(time.time() * 1000))
-    sorted_query = ''.join(f"{k}{v}" for k, v in sorted(query_params.items())) if query_params else ''
+    timestamp = str(int(time.time() * 1000))  # milliseconds
+    sorted_query = ''
+    if query_params:
+        # concatenate key+value in ascii ascending order
+        sorted_query = ''.join(f"{k}{v}" for k, v in sorted(query_params.items()))
     body_str = json.dumps(body, separators=(',', ':'), sort_keys=True) if body else ''
     digest_input = (nonce + timestamp + api_key + sorted_query + body_str).encode('utf-8')
     digest = hashlib.sha256(digest_input).hexdigest()
     sign_input = (digest + secret_key).encode('utf-8')
     sign = hashlib.sha256(sign_input).hexdigest()
-    return {
+    headers = {
         "api-key": api_key,
         "nonce": nonce,
         "timestamp": timestamp,
         "sign": sign,
         "Content-Type": "application/json"
     }
+    return headers
 
 # --------------------- Request Helper ---------------------
 def send_request(method, endpoint, body=None, query=None):
     url = f"{BASE_URL}{endpoint}"
-    headers = generate_signature(BITUNIX_API_KEY, BITUNIX_API_SECRET, query, body)
     for attempt in range(1, MAX_RETRIES + 1):
+        # generate fresh headers each attempt (nonce/timestamp must be fresh)
+        headers = generate_signature(BITUNIX_API_KEY, BITUNIX_API_SECRET, query, body)
         try:
             r = requests.request(method, url,
                                  headers=headers,
                                  json=body if method.upper() in ["POST", "DELETE"] else None,
                                  params=query, timeout=10)
+            # Some endpoints return HTTP 200 even with API-level error, so handle both
+            # raise_for_status for network/HTTP errors
             r.raise_for_status()
-            resp_json = r.json()
-            if resp_json.get("code") == 0:
-                return resp_json
+            try:
+                resp_json = r.json()
+            except ValueError:
+                print(f"Non-JSON response (attempt {attempt}): {r.text}")
+                resp_json = None
+
+            # If we got a dict with 'code' key, follow doc pattern
+            if isinstance(resp_json, dict):
+                code = resp_json.get("code")
+                if code == 0:
+                    return resp_json
+                else:
+                    # Log API-level error but allow retry
+                    print(f"Bitunix API error (attempt {attempt}): code={code}, msg={resp_json.get('msg')}, full={resp_json}")
             else:
-                print(f"Bitunix API error: {resp_json.get('msg')}")
+                # Not a dict - log and return raw content (no .get usage)
+                print(f"Unexpected response shape (attempt {attempt}): {resp_json if resp_json is not None else r.text}")
+                # Return raw - caller should handle
+                return resp_json
         except requests.exceptions.RequestException as e:
             print(f"Request error attempt {attempt}: {e}")
-        except json.JSONDecodeError:
-            print(f"Error decoding JSON: {r.text}")
         time.sleep(RETRY_DELAY)
     return None
 
 # --------------------- Open Positions ---------------------
 def get_open_positions(symbol):
     resp = send_request("GET", "/api/v1/futures/trade/positions", query={"symbol": symbol})
-    if resp and "data" in resp:
-        return [p for p in resp["data"] if float(p.get("positionAmt", 0)) != 0]
+    if isinstance(resp, dict) and "data" in resp:
+        # adapt to returned structure: docs show list under "data"
+        try:
+            return [p for p in resp["data"] if float(p.get("positionAmt", 0) or p.get("qty", 0) or 0) != 0]
+        except Exception:
+            # fallback - return data as-is if can't parse
+            return resp.get("data", [])
     return []
 
 def close_all_positions(symbol):
@@ -86,17 +115,20 @@ def close_all_positions(symbol):
 
 # --------------------- Place Limit Order ---------------------
 def place_limit_order(symbol, side, quantity, sl=None, tp=None, guaranteed_sl=False):
-    # Clean symbol prefix if any
+    # Clean symbol prefix if any (TradingView often sends EXCHANGE:SYM)
     if ":" in symbol:
         symbol = symbol.split(":")[-1]
 
     # Round quantity to asset precision and enforce minimum
     precision = ASSET_PRECISION.get(symbol, 3)
     min_qty = MIN_ORDER_QTY.get(symbol, 0.001)
-    quantity = max(round(quantity, precision), min_qty)
+    # Round to correct precision
+    quantity = max(round(float(quantity), precision), min_qty)
+    qty_str = f"{quantity:.{precision}f}"
 
+    # Fetch book to compute a conservative limit price near mid price
     ticker_resp = send_request("GET", "/api/v1/futures/market/depth", query={"symbol": symbol, "limit": 1})
-    if not ticker_resp or "data" not in ticker_resp:
+    if not isinstance(ticker_resp, dict) or "data" not in ticker_resp:
         print("❌ Failed to fetch order book")
         return None
     bids = ticker_resp["data"].get("bids", [])
@@ -104,21 +136,42 @@ def place_limit_order(symbol, side, quantity, sl=None, tp=None, guaranteed_sl=Fa
     if not bids or not asks:
         print("❌ Empty bids or asks")
         return None
-    last_price = (float(bids[0][0]) + float(asks[0][0])) / 2
+    try:
+        # bids/asks elements may be [price, qty]
+        last_price = (float(bids[0][0]) + float(asks[0][0])) / 2
+    except Exception as e:
+        print("Error parsing book prices:", e)
+        return None
 
+    # Map side to API expected uppercase
+    side_up = side.upper() if isinstance(side, str) else str(side).upper()
+    if side_up not in ("BUY", "SELL"):
+        # Attempt to map common synonyms
+        side_up = "BUY" if side in ("buy", "long", "LONG") else "SELL"
+
+    # Build order body according to Bitunix place_order API
     order_body = {
         "symbol": symbol,
-        "side": side,
-        "type": "LIMIT",
-        "price": last_price,
-        "quantity": quantity,
-        "timeInForce": "GTC",
+        "side": side_up,         # BUY or SELL
+        "orderType": "LIMIT",    # LIMIT order
+        "price": str(last_price),
+        "qty": qty_str,          # 'qty' expected by API
+        "effect": "GTC",
         "leverage": LEVERAGE,
-        "stopLossPrice": sl,
-        "takeProfitPrice": tp,
-        "guaranteedStopLoss": guaranteed_sl
+        "tradeSide": "OPEN"      # open order by default (use CLOSE for closing in hedge-mode)
     }
-    order_body = {k: v for k, v in order_body.items() if v is not None}
+
+    # Attach TP/SL in API parameter names
+    if sl is not None:
+        order_body["slPrice"] = str(sl)
+    if tp is not None:
+        order_body["tpPrice"] = str(tp)
+
+    # Keep guaranteed stop if available flag (some endpoints accept it)
+    if guaranteed_sl:
+        order_body["guaranteedStopLoss"] = True
+
+    # Remove None values (already guarded)
     print("Placing order:", order_body)
     return send_request("POST", "/api/v1/futures/trade/place_order", body=order_body)
 
@@ -137,14 +190,21 @@ def webhook():
         guaranteed_sl = data.get("guaranteed_stop_loss", False)
 
         if not symbol or not side or quantity is None:
-            return jsonify({"status": "error", "message": "Missing required fields"}), 400
+            return jsonify({"status": "error", "message": "Missing required fields (symbol, side, quantity)"}), 400
 
+        # If quantity is 0 -> close all positions
         if float(quantity) == 0.0:
             resp = close_all_positions(symbol)
-            return jsonify({"status": "success", "response": resp}) if resp.get("code") == 0 else jsonify({"status": "failed", "message": resp.get("msg")}), 500
+            if isinstance(resp, dict) and resp.get("code") == 0:
+                return jsonify({"status": "success", "response": resp})
+            else:
+                return jsonify({"status": "failed", "message": resp or "Failed to close positions"}), 500
 
         resp = place_limit_order(symbol, side, quantity, sl, tp, guaranteed_sl)
-        return jsonify({"status": "success", "response": resp}) if resp else jsonify({"status": "failed", "message": "Failed to place order"}), 500
+        if resp:
+            return jsonify({"status": "success", "response": resp})
+        else:
+            return jsonify({"status": "failed", "message": "Failed to place order"}), 500
 
     except Exception as e:
         print(f"Unexpected error: {e}")
