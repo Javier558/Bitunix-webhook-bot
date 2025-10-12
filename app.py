@@ -25,7 +25,7 @@ MIN_ORDER_QTY = {
 
 # Decimal precision per asset (adjust as needed)
 ASSET_PRECISION = {
-    "SOLUSDT": 3,
+    "SOLUSDT": 4,
     "BTCUSDT": 5,
     # add more symbols here
 }
