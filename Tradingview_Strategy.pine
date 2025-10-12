@@ -90,7 +90,7 @@ var string symbol_to_send = ""
 var string alert_msg = ""
 
 if not na(sl_price) and not na(tp_price)
-    side_str = direction == 1 ? "buy" : "sell"
+    side_str = direction == 1 ? "BUY" : "SELL"
     // Remove exchange prefix if present
     symbol_to_send := str.contains(syminfo.tickerid, ":") ? array.get(str.split(syminfo.tickerid, ":"), 1) : syminfo.tickerid
 
@@ -115,3 +115,4 @@ if not na(sl_price) and not na(tp_price)
 showDebug = input.bool(false, 'Show debug labels')
 if showDebug
     label.new(bar_index, high, text = 'dir: ' + str.tostring(direction) + '\nSymbol: ' + symbol_to_send + '\nQty: ' + qty_str, yloc = yloc.abovebar, style = label.style_label_left, textcolor = color.white, size = size.small)
+
