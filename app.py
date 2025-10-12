@@ -215,3 +215,4 @@ if __name__ == "__main__":
     if not BITUNIX_API_KEY or not BITUNIX_API_SECRET:
         print("⚠️ BITUNIX_API_KEY or BITUNIX_API_SECRET not set")
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
+print(send_request("GET", "/api/v1/futures/market/symbols"))
