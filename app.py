@@ -18,14 +18,14 @@ MAX_RETRIES = 5
 
 # Minimum order size per asset (adjust as needed)
 MIN_ORDER_QTY = {
-    "SOLUSDT": 0.001,
+    "SOLUSDT.P": 0.001,
     "BTCUSDT": 0.0001,
     # add more symbols here
 }
 
 # Decimal precision per asset (adjust as needed)
 ASSET_PRECISION = {
-    "SOLUSDT": 4,
+    "SOLUSDT.P": 4,
     "BTCUSDT": 5,
     # add more symbols here
 }
