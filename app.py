@@ -18,14 +18,14 @@ MAX_RETRIES = 5
 
 # Minimum order size per asset (adjust as needed)
 MIN_ORDER_QTY = {
-    "SOLUSDT": 0.1,
+    "SOLUSDT": 0.001,
     "BTCUSDT": 0.0001,
     # add more symbols here
 }
 
 # Decimal precision per asset (adjust as needed)
 ASSET_PRECISION = {
-    "SOLUSDT": 4,
+    "SOLUSDT": 3,
     "BTCUSDT": 5,
     # add more symbols here
 }
@@ -215,4 +215,3 @@ if __name__ == "__main__":
     if not BITUNIX_API_KEY or not BITUNIX_API_SECRET:
         print("⚠️ BITUNIX_API_KEY or BITUNIX_API_SECRET not set")
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
-print(send_request("GET", "/api/v1/futures/market/symbols"))
