@@ -33,36 +33,48 @@ ASSET_PRECISION = {
 # --------------------- Signature ---------------------
 def generate_signature(api_key, secret_key, query_params=None, body=None):
     """
-    Bitunix signature (confirmed working):
-      1. digest = SHA256(nonce + timestamp + apiKey + queryParams + body).upper()
-      2. sign   = SHA256(digest + secretKey).upper()
-    All concatenated values are plain strings.
-    queryParams = concatenation of key+value sorted alphabetically.
-    body = compact JSON (no spaces).
+    Bitunix signature (debug-enhanced version)
+
+    Formula:
+        digest = SHA256(nonce + timestamp + apiKey + queryParams + body).upper()
+        sign   = SHA256(digest + secretKey).upper()
     """
+
     import hashlib, uuid, json, time
 
     nonce = str(uuid.uuid4()).replace("-", "")[:32]
     timestamp = str(int(time.time() * 1000))
 
-    # Step 1: build query string
+    # ---- Build query string (alphabetical order) ----
     sorted_query = ""
     if query_params:
         sorted_items = sorted(query_params.items(), key=lambda x: x[0])
         sorted_query = "".join(f"{k}{v}" for k, v in sorted_items)
 
-    # Step 2: compact JSON body (exact same string as request)
+    # ---- Compact JSON body ----
     body_str = ""
     if body:
         body_str = json.dumps(body, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
 
-    # Step 3: first hash (digest)
-    digest_raw = (nonce + timestamp + api_key + sorted_query + body_str).encode("utf-8")
-    digest_hex = hashlib.sha256(digest_raw).hexdigest().upper()
+    # ---- Step 1: digest ----
+    digest_input_str = nonce + timestamp + api_key + sorted_query + body_str
+    digest_hex = hashlib.sha256(digest_input_str.encode("utf-8")).hexdigest().upper()
 
-    # Step 4: second hash (sign)
-    sign_raw = (digest_hex + secret_key).encode("utf-8")
-    sign_hex = hashlib.sha256(sign_raw).hexdigest().upper()
+    # ---- Step 2: sign ----
+    sign_input_str = digest_hex + secret_key
+    sign_hex = hashlib.sha256(sign_input_str.encode("utf-8")).hexdigest().upper()
+
+    # ---- Debugging output ----
+    print("\n===== Bitunix Signature Debug =====")
+    print("Nonce:", nonce)
+    print("Timestamp:", timestamp)
+    print("Sorted query:", sorted_query)
+    print("Body string:", body_str)
+    print("Digest input (nonce+timestamp+apiKey+query+body):", digest_input_str)
+    print("Digest HEX (uppercase):", digest_hex)
+    print("Sign input (digest+secret):", sign_input_str)
+    print("Final SIGN (uppercase):", sign_hex)
+    print("===================================\n")
 
     headers = {
         "api-key": api_key,
