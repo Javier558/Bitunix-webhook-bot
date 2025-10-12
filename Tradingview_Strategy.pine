@@ -12,11 +12,11 @@ strategy('9:00PM first trade + immediate re-entry (SL/TP)',
 
 // === INPUTS ===
 tp_percent = input.float(0.5, 'Take Profit (%)', step = 0.1)
-sl_percent = input.float(0.01, 'Stop Loss (%)', step = 0.1)
+sl_percent = input.float(0.01, 'Stop Loss (%)', step = 0.01)  // smaller step so 0.01 is selectable
 start_hour = input.int(21, 'First trade hour (24h)')
 start_minute = input.int(0, 'First trade minute')
-min_order_qty = input.float(0.001, "Minimum order quantity")  
-asset_precision = input.int(3, "Quantity decimal places")      
+min_order_qty = input.float(0.001, "Minimum order quantity")
+asset_precision = input.int(3, "Quantity decimal places")
 
 // === STATE VARIABLES ===
 var int direction = 1 // 1 = long, -1 = short
@@ -30,16 +30,26 @@ var float initial_equity = na
 
 pos_size = strategy.position_size
 
+// ensure initial_equity has a fallback (use strategy.equity if somehow na)
 if barstate.isfirst
     initial_equity := strategy.equity
+// keep it set just in case
+initial_equity := nz(initial_equity, strategy.equity)
 
-// === 1) First trade at 21:00 ===
+// === 1) First trade at start time ===
 isStartBar = hour(time) == start_hour and minute(time) == start_minute
+// compute qty before entries so we can pass to strategy.entry
+position_value_usd = initial_equity * 0.15
+raw_qty = position_value_usd / (close == 0 ? 1 : close)
+rounded_qty = math.round(raw_qty * math.pow(10, asset_precision)) / math.pow(10, asset_precision)
+qty = math.max(rounded_qty, min_order_qty)
+
+// Only send entries when flat and not already done for firstTrade
 if isStartBar and not firstTradeDone and pos_size == 0
     if direction == 1
-        strategy.entry('Long', strategy.long)
+        strategy.entry('Long', strategy.long, qty=qty)
     else
-        strategy.entry('Short', strategy.short)
+        strategy.entry('Short', strategy.short, qty=qty)
     firstTradeDone := true
 
 // === 2) Capture entry price ===
@@ -66,15 +76,11 @@ if was_in_position_prev and now_flat
     if profitPerc < 0
         direction := -direction
     last_entry_price := na
+    // immediate re-entry with calculated qty
     if direction == 1
-        strategy.entry('Long', strategy.long)
+        strategy.entry('Long', strategy.long, qty=qty)
     else
-        strategy.entry('Short', strategy.short)
-
-// === 5) Dynamic quantity (15% of equity) ===
-position_value_usd = initial_equity * 0.15
-qty = position_value_usd / close
-qty := math.max(math.round(qty * math.pow(10, asset_precision)) / math.pow(10, asset_precision), min_order_qty)
+        strategy.entry('Short', strategy.short, qty=qty)
 
 // === 6) Webhook JSON builder ===
 var string sl_str = ""
@@ -85,27 +91,27 @@ var string alert_msg = ""
 
 if not na(sl_price) and not na(tp_price)
     side_str = direction == 1 ? "buy" : "sell"
-
-    // Remove exchange prefix
+    // Remove exchange prefix if present
     symbol_to_send := str.contains(syminfo.tickerid, ":") ? array.get(str.split(syminfo.tickerid, ":"), 1) : syminfo.tickerid
 
-    // Convert numeric values
+    // Convert numeric values to strings using tick-formatting
     sl_str := str.tostring(sl_price, format.mintick)
     tp_str := str.tostring(tp_price, format.mintick)
     qty_str := str.tostring(qty, format.mintick)
 
-    // Safe JSON
+    // Build JSON string safely (avoid Pine object-literal issues)
     alert_msg := '{' +
                   '"side":"' + side_str + '",' +
                   '"symbol":"' + symbol_to_send + '",' +
                   '"sl":' + sl_str + ',' +
                   '"tp":' + tp_str + ',' +
                   '"quantity":' + qty_str + ',' +
-                  '"guaranteed_stop_loss":true}'
+                  '"guaranteed_stop_loss":true' +
+                  '}'
 
     alert(alert_msg, alert.freq_once_per_bar)
 
 // === Debug ===
-var showDebug = input.bool(false, 'Show debug labels')
+showDebug = input.bool(false, 'Show debug labels')
 if showDebug
     label.new(bar_index, high, text = 'dir: ' + str.tostring(direction) + '\nSymbol: ' + symbol_to_send + '\nQty: ' + qty_str, yloc = yloc.abovebar, style = label.style_label_left, textcolor = color.white, size = size.small)
