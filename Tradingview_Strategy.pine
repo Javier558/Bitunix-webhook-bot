@@ -15,8 +15,8 @@ tp_percent = input.float(0.5, 'Take Profit (%)', step = 0.1)
 sl_percent = input.float(0.01, 'Stop Loss (%)', step = 0.01)  // smaller step so 0.01 is selectable
 start_hour = input.int(21, 'First trade hour (24h)')
 start_minute = input.int(0, 'First trade minute')
-min_order_qty = input.float(0.001, "Minimum order quantity")
-asset_precision = input.int(3, "Quantity decimal places")
+min_order_qty = input.float(0.1, "Minimum order quantity")
+asset_precision = input.int(4, "Quantity decimal places")
 
 // === STATE VARIABLES ===
 var int direction = 1 // 1 = long, -1 = short
@@ -115,5 +115,6 @@ if not na(sl_price) and not na(tp_price)
 showDebug = input.bool(false, 'Show debug labels')
 if showDebug
     label.new(bar_index, high, text = 'dir: ' + str.tostring(direction) + '\nSymbol: ' + symbol_to_send + '\nQty: ' + qty_str, yloc = yloc.abovebar, style = label.style_label_left, textcolor = color.white, size = size.small)
+
 
 
