@@ -168,7 +168,8 @@ def place_limit_order(symbol, side, quantity, sl=None, tp=None, guaranteed_sl=Fa
         return None
     try:
         # bids/asks elements may be [price, qty]
-        last_price = (float(bids[0][0]) + float(asks[0][0])) / 2
+        #and this: last_price = (float(bids[0][0]) + float(asks[0][0])) / 2
+        last_price_str = f"{last_price:.8f}" # Use sufficient decimal places
     except Exception as e:
         print("Error parsing book prices:", e)
         return None
@@ -184,7 +185,7 @@ def place_limit_order(symbol, side, quantity, sl=None, tp=None, guaranteed_sl=Fa
         "symbol": symbol,
         "side": side_up,         # BUY or SELL
         "orderType": "LIMIT",    # LIMIT order
-        "price": str(last_price),
+        "price": last_price_str,
         "qty": qty_str,          # 'qty' expected by API
         "effect": "GTC",
         "leverage": LEVERAGE,
