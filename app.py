@@ -168,8 +168,13 @@ def place_limit_order(symbol, side, quantity, sl=None, tp=None, guaranteed_sl=Fa
         return None
     try:
         # bids/asks elements may be [price, qty]
-        #and this: last_price = (float(bids[0][0]) + float(asks[0][0])) / 2
-        last_price_str = f"{last_price:.8f}" # Use sufficient decimal places
+        last_price = (float(bids[0][0]) + float(asks[0][0])) / 2
+        # --- ADDED/MODIFIED LINE HERE ---
+        # Explicitly round the price to a sufficient number of decimal places before converting to string
+        # Use 8 decimal places as a robust default, or consult Bitunix docs for specific symbol precision
+        last_price_str = f"{last_price:.4f}" 
+        # --- END OF MODIFIED LINE ---
+
     except Exception as e:
         print("Error parsing book prices:", e)
         return None
@@ -185,7 +190,7 @@ def place_limit_order(symbol, side, quantity, sl=None, tp=None, guaranteed_sl=Fa
         "symbol": symbol,
         "side": side_up,         # BUY or SELL
         "orderType": "LIMIT",    # LIMIT order
-        "price": last_price_str,
+        "price": last_price_str, # Use the explicitly formatted price string
         "qty": qty_str,          # 'qty' expected by API
         "effect": "GTC",
         "leverage": LEVERAGE,
@@ -206,6 +211,7 @@ def place_limit_order(symbol, side, quantity, sl=None, tp=None, guaranteed_sl=Fa
     print("Placing order:", order_body)
     return send_request("POST", "/api/v1/futures/trade/place_order", body=order_body)
 
+# ... rest of your code ...
 # --------------------- Webhook ---------------------
 @app.route("/webhook", methods=["POST"])
 def webhook():
