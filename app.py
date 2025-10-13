@@ -15,8 +15,9 @@ BASE_URL = "https://fapi.bitunix.com"
 LEVERAGE = 50
 RETRY_DELAY = 0.5
 MAX_RETRIES = 5
-STOP_LOSS_PERCENTAGE = 0.02 
-TAKE_PROFIT_PERCENTAGE = 0.04
+#Use decimals values(e.g., 0.0002 = 0.02%)
+STOP_LOSS_PERCENTAGE = 0.0001
+TAKE_PROFIT_PERCENTAGE = 0.005
 
 # Minimum order size per asset (adjust as needed)
 MIN_ORDER_QTY = {
@@ -168,7 +169,7 @@ def place_limit_order(symbol, side, quantity, guaranteed_sl=False):
         return None
     try:
         last_price = (float(bids[0][0]) + float(asks[0][0])) / 2
-        last_price_str = f"{last_price:.8f}" # Use 8 for higher precision
+        last_price_str = f"{last_price:.4f}" # Use 8 for higher precision
     except Exception as e:
         print("Error parsing book prices:", e)
         return None
