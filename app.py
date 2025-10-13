@@ -208,10 +208,11 @@ def place_limit_order(symbol, side, quantity, sl=None, tp=None, guaranteed_sl=Fa
 # --------------------- Webhook ---------------------
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    if not request.is_json:
-        return jsonify({"status": "error", "message": "Content-Type must be application/json"}), 415
+    #i removed this:if not request.is_json:
+    #and this    return jsonify({"status": "error", "message": "Content-Type must be application/json"}), 415
     try:
-        data = request.get_json(force=True)
+        #and this: data = request.get_json(force=True)
+        data = json.loads(request.get_data())
         print("Received Webhook Data:", data) # <-- Add this line 
         symbol = data.get("symbol")
         side = data.get("side")
