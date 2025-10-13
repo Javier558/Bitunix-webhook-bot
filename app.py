@@ -15,6 +15,8 @@ BASE_URL = "https://fapi.bitunix.com"
 LEVERAGE = 50
 RETRY_DELAY = 0.5
 MAX_RETRIES = 5
+STOP_LOSS_PERCENTAGE = 0.02 
+TAKE_PROFIT_PERCENTAGE = 0.04
 
 # Minimum order size per asset (adjust as needed)
 MIN_ORDER_QTY = {
@@ -143,20 +145,18 @@ def close_all_positions(symbol):
         return {"code": 1, "msg": "No open positions"}
     return send_request("POST", "/api/v1/futures/trade/close_all_position", body={"symbol": symbol})
 
-# --------------------- Place Limit Order ---------------------
-def place_limit_order(symbol, side, quantity, sl=None, tp=None, guaranteed_sl=False):
-    # Clean symbol prefix if any (TradingView often sends EXCHANGE:SYM)
+# --------------------- Place Limit Order (Modified) ---------------------
+def place_limit_order(symbol, side, quantity, guaranteed_sl=False):
+    # sl and tp parameters are removed, as the bot will now calculate them
+    
     if ":" in symbol:
         symbol = symbol.split(":")[-1]
 
-    # Round quantity to asset precision and enforce minimum
     precision = ASSET_PRECISION.get(symbol, 3)
     min_qty = MIN_ORDER_QTY.get(symbol, 0.001)
-    # Round to correct precision
     quantity = max(round(float(quantity), precision), min_qty)
     qty_str = f"{quantity:.{precision}f}"
 
-    # Fetch book to compute a conservative limit price near mid price
     ticker_resp = send_request("GET", "/api/v1/futures/market/depth", query={"symbol": symbol, "limit": 1})
     if not isinstance(ticker_resp, dict) or "data" not in ticker_resp:
         print("❌ Failed to fetch order book")
@@ -167,87 +167,70 @@ def place_limit_order(symbol, side, quantity, sl=None, tp=None, guaranteed_sl=Fa
         print("❌ Empty bids or asks")
         return None
     try:
-        # bids/asks elements may be [price, qty]
         last_price = (float(bids[0][0]) + float(asks[0][0])) / 2
-        # --- ADDED/MODIFIED LINE HERE ---
-        # Explicitly round the price to a sufficient number of decimal places before converting to string
-        # Use 8 decimal places as a robust default, or consult Bitunix docs for specific symbol precision
-        last_price_str = f"{last_price:.4f}" 
-        # --- END OF MODIFIED LINE ---
-
+        last_price_str = f"{last_price:.8f}" # Use 8 for higher precision
     except Exception as e:
         print("Error parsing book prices:", e)
         return None
 
-    # Map side to API expected uppercase
     side_up = side.upper() if isinstance(side, str) else str(side).upper()
-    if side_up not in ("BUY", "SELL"):
-        # Attempt to map common synonyms
-        side_up = "BUY" if side in ("buy", "long", "LONG") else "SELL"
+    
+    # --- NEW SL/TP CALCULATION LOGIC ---
+    price_float = float(last_price_str)
+    if side_up == "BUY":
+        sl_price = price_float * (1 - STOP_LOSS_PERCENTAGE)
+        tp_price = price_float * (1 + TAKE_PROFIT_PERCENTAGE)
+    elif side_up == "SELL":
+        sl_price = price_float * (1 + STOP_LOSS_PERCENTAGE)
+        tp_price = price_float * (1 - TAKE_PROFIT_PERCENTAGE)
+    else:
+        print(f"⚠️ Warning: Invalid side '{side_up}' received. Cannot calculate SL/TP.")
+        sl_price = None
+        tp_price = None
+    # --- END NEW SL/TP CALCULATION LOGIC ---
 
-    # Build order body according to Bitunix place_order API
     order_body = {
         "symbol": symbol,
-        "side": side_up,         # BUY or SELL
-        "orderType": "LIMIT",    # LIMIT order
-        "price": last_price_str, # Use the explicitly formatted price string
-        "qty": qty_str,          # 'qty' expected by API
+        "side": side_up,
+        "orderType": "LIMIT",
+        "price": last_price_str,
+        "qty": qty_str,
         "effect": "GTC",
         "leverage": LEVERAGE,
-        "tradeSide": "OPEN"      # open order by default (use CLOSE for closing in hedge-mode)
+        "tradeSide": "OPEN"
     }
 
-    # Attach TP/SL in API parameter names
-    if sl is not None:
-        order_body["slPrice"] = f"{sl:.4f}"
-    if tp is not None:
-        order_body["tpPrice"] = f"{tp:.4f}"
+    # Attach TP/SL to the order body, formatting to a consistent decimal precision
+    if sl_price is not None:
+        order_body["slPrice"] = f"{sl_price:.4f}" # Format for API call
+    if tp_price is not None:
+        order_body["tpPrice"] = f"{tp_price:.4f}" # Format for API call
 
-    # Keep guaranteed stop if available flag (some endpoints accept it)
     if guaranteed_sl:
         order_body["guaranteedStopLoss"] = True
 
-    # Remove None values (already guarded)
     print("Placing order:", order_body)
     return send_request("POST", "/api/v1/futures/trade/place_order", body=order_body)
 
-# ... rest of your code ...
-# --------------------- Webhook ---------------------
+# --------------------- Webhook (Modified) ---------------------
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    #i removed this:if not request.is_json:
-    #and this    return jsonify({"status": "error", "message": "Content-Type must be application/json"}), 415
+    if not request.is_json:
+        return jsonify({"status": "error", "message": "Content-Type must be application/json"}), 415
     try:
-        #and this: data = request.get_json(force=True)
-        data = json.loads(request.get_data())
-        print("Received Webhook Data:", data) # <-- Add this line 
+        data = request.get_json(force=True)
         symbol = data.get("symbol")
         side = data.get("side")
         quantity = data.get("quantity")
-        sl = data.get("sl")
-        tp = data.get("tp")
         guaranteed_sl = data.get("guaranteed_stop_loss", False)
 
-        if not symbol or not side or quantity is None:
-            return jsonify({"status": "error", "message": "Missing required fields (symbol, side, quantity)"}), 400
-
-        # If quantity is 0 -> close all positions
-        if float(quantity) == 0.0:
-            resp = close_all_positions(symbol)
-            if isinstance(resp, dict) and resp.get("code") == 0:
-                return jsonify({"status": "success", "response": resp})
-            else:
-                return jsonify({"status": "failed", "message": resp or "Failed to close positions"}), 500
-
-        resp = place_limit_order(symbol, side, quantity, sl, tp, guaranteed_sl)
-        if resp:
-            return jsonify({"status": "success", "response": resp})
-        else:
-            return jsonify({"status": "failed", "message": "Failed to place order"}), 500
-
+        # The webhook no longer needs to provide SL and TP values,
+        # as they are now calculated automatically.
+        place_limit_order(symbol, side, quantity, guaranteed_sl)
+        return jsonify({"status": "success"})
     except Exception as e:
-        print(f"Unexpected error: {e}")
-        return jsonify({"status": "failed", "message": str(e)}), 500
+        return jsonify({"status": "error", "message": str(e)}), 500
+
 
 # --------------------- Run ---------------------
 if __name__ == "__main__":
