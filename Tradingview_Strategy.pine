@@ -115,6 +115,3 @@ if not na(sl_price) and not na(tp_price)
 showDebug = input.bool(false, 'Show debug labels')
 if showDebug
     label.new(bar_index, high, text = 'dir: ' + str.tostring(direction) + '\nSymbol: ' + symbol_to_send + '\nQty: ' + qty_str, yloc = yloc.abovebar, style = label.style_label_left, textcolor = color.white, size = size.small)
-
-
-
