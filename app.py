@@ -130,7 +130,7 @@ def place_limit_order(symbol, side, quantity, guaranteed_sl=False):
         symbol = symbol.split(":")[-1]
 
     precision = ASSET_PRECISION.get(symbol, 3)
-    min_qty = MIN_ORDER_QTY.get(symbol, 0.001)
+    min_qty = MIN_ORDER_QTY.get(symbol, 0.1)
     quantity = max(round(float(quantity), precision), min_qty)
     qty_str = f"{quantity:.{precision}f}"
 
