@@ -199,9 +199,9 @@ def place_limit_order(symbol, side, quantity, sl=None, tp=None, guaranteed_sl=Fa
 
     # Attach TP/SL in API parameter names
     if sl is not None:
-        order_body["slPrice"] = str(sl)
+        order_body["slPrice"] = f"{sl:.4f}"
     if tp is not None:
-        order_body["tpPrice"] = str(tp)
+        order_body["tpPrice"] = f"{tp:.4f}"
 
     # Keep guaranteed stop if available flag (some endpoints accept it)
     if guaranteed_sl:
