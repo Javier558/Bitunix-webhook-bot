@@ -212,6 +212,7 @@ def webhook():
         return jsonify({"status": "error", "message": "Content-Type must be application/json"}), 415
     try:
         data = request.get_json(force=True)
+        print("Received Webhook Data:", data) # <-- Add this line 
         symbol = data.get("symbol")
         side = data.get("side")
         quantity = data.get("quantity")
