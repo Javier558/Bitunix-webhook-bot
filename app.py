@@ -35,49 +35,26 @@ ASSET_PRECISION = {
 
 # --------------------- Signature ---------------------
 def generate_signature(api_key, secret_key, query_params=None, body=None):
-    """
-    Bitunix signature (debug-enhanced version)
-
-    Formula:
-        digest = SHA256(nonce + timestamp + apiKey + queryParams + body).upper()
-        sign   = SHA256(digest + secretKey).upper()
-    """
-
     import hashlib, uuid, json, time
 
     nonce = str(uuid.uuid4()).replace("-", "")[:32]
     timestamp = str(int(time.time() * 1000))
 
-    # ---- Build query string (alphabetical order) ----
     sorted_query = ""
     if query_params:
         sorted_items = sorted(query_params.items(), key=lambda x: x[0])
         sorted_query = "".join(f"{k}{v}" for k, v in sorted_items)
 
-    # ---- Compact JSON body ----
     body_str = ""
     if body:
-        body_str = json.dumps(body, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+        # Do NOT sort keys or add spaces; body must exactly match what is sent.
+        body_str = json.dumps(body, ensure_ascii=False, separators=(",", ":"))
 
-    # ---- Step 1: digest ----
-    digest_input_str = nonce + timestamp + api_key + sorted_query + body_str
-    digest_hex = hashlib.sha256(digest_input_str.encode("utf-8")).hexdigest().upper()
+    digest_input = nonce + timestamp + api_key + sorted_query + body_str
+    digest_hex = hashlib.sha256(digest_input.encode("utf-8")).hexdigest()  # lowercase
 
-    # ---- Step 2: sign ----
-    sign_input_str = digest_hex + secret_key
-    sign_hex = hashlib.sha256(sign_input_str.encode("utf-8")).hexdigest().upper()
-
-    # ---- Debugging output ----
-    print("\n===== Bitunix Signature Debug =====")
-    print("Nonce:", nonce)
-    print("Timestamp:", timestamp)
-    print("Sorted query:", sorted_query)
-    print("Body string:", body_str)
-    print("Digest input (nonce+timestamp+apiKey+query+body):", digest_input_str)
-    print("Digest HEX (uppercase):", digest_hex)
-    print("Sign input (digest+secret):", sign_input_str)
-    print("Final SIGN (uppercase):", sign_hex)
-    print("===================================\n")
+    sign_input = digest_hex + secret_key
+    sign_hex = hashlib.sha256(sign_input.encode("utf-8")).hexdigest()  # lowercase
 
     headers = {
         "api-key": api_key,
@@ -87,7 +64,6 @@ def generate_signature(api_key, secret_key, query_params=None, body=None):
         "Content-Type": "application/json"
     }
     return headers
-
 
 # --------------------- Request Helper ---------------------
 def send_request(method, endpoint, body=None, query=None):
